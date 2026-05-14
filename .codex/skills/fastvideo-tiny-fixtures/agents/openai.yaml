@@ -1,0 +1,4 @@
+interface:
+  display_name: "FastVideo Tiny Fixtures"
+  short_description: "Build tiny FastVideo Wan fixtures"
+  default_prompt: "Use $fastvideo-tiny-fixtures to create or debug a tiny FastVideo-compatible Wan fixture."
