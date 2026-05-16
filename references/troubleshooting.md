@@ -196,9 +196,22 @@ Observed failure when CUDA 13 libraries are added to `LD_LIBRARY_PATH` on this d
 Cuda failure 'CUDA driver version is insufficient for CUDA runtime version'
 ```
 
-Fix: Do not install current `sglang[diffusion]` into the same `.venv` used for FastVideo unless you are deliberately
-switching that environment to an SGLang-compatible stack. Use a CUDA-12 SGLang build/container, or upgrade the NVIDIA
-driver enough for the CUDA runtime required by the installed SGLang kernel wheel.
+Fix: Do not install current unpinned `sglang[diffusion]` into the same `.venv` used for FastVideo unless you are
+deliberately switching that environment to an SGLang-compatible stack. The working local path is a pinned isolated env
+created by `scripts/install_sglang_diffusion.sh`:
+
+```text
+sglang==0.5.5
+torch==2.8.0+cu128
+sgl-kernel==0.3.16.post5
+vsa==0.0.4
+cuda-python==12.9.6
+pytest==9.0.3
+```
+
+This stack avoids `sglang-kernel` and `nvidia-*-cu13` packages. It needs `CUDA_HOME` pointed at the venv's NVIDIA
+package and a sanitized `PATH` so Triton uses `/usr/bin/ld` instead of the Miniconda linker. See
+`references/sglang-diffusion.md` for the full guide.
 
 The current SGLang backend test is intentionally marked slow and optional:
 
@@ -210,7 +223,47 @@ python -m pytest tests/backends/test_sglang_tiny_wan.py -m slow -s
 If `sglang` is absent, the test skips. If `sglang` is installed but the runtime stack is incompatible, the test fails
 with the real `sglang generate` output.
 
-### Isolated `.venv_sglangcuda12` Attempt
+### Working `.venv_sglangcuda12` FastWan VSA Validation
+
+The validated foreground command generated `artifacts/backend-videos/sglang-fastwan-vsa/fastwan-vsa-smoke.mp4` on
+May 15, 2026:
+
+```bash
+source .venv_sglangcuda12/bin/activate
+export PATH="$PWD/.venv_sglangcuda12/bin:/usr/local/bin:/usr/bin:/bin"
+export CC=/usr/bin/gcc
+export CXX=/usr/bin/g++
+export CUDA_HOME="$PWD/.venv_sglangcuda12/lib/python3.12/site-packages/nvidia"
+
+timeout 300s sglang generate \
+  --model-path FastVideo/FastWan2.1-T2V-1.3B-Diffusers \
+  --attention-backend=video_sparse_attn \
+  --VSA-sparsity=0.5 \
+  --num-gpus=1 \
+  --prompt "A calm ocean wave at sunrise" \
+  --height=448 \
+  --width=832 \
+  --num-frames=61 \
+  --num-inference-steps=3 \
+  --seed=123 \
+  --save-output \
+  --output-path artifacts/backend-videos/sglang-fastwan-vsa \
+  --output-file-name fastwan-vsa-smoke.mp4
+```
+
+SGLang reported:
+
+```text
+Using Video Sparse Attention backend.
+Pixel data generated successfully in 20.81 seconds
+Completed batch processing. Generated 1 outputs in 21.39 seconds.
+```
+
+The log line `Selected attention backend: 'video_sparse_attn' not in supported attention backends ... Use fa3 as
+default backend` is expected for attention sites that do not support VSA. The Wan transformer block still uses the VSA
+block path when `--attention-backend=video_sparse_attn` is set.
+
+### Failed `torch==2.6.0+cu124` Attempt
 
 An isolated uv environment was created at `.venv_sglangcuda12` to test whether older CUDA-12 SGLang wheels can avoid a
 driver upgrade. The base CUDA probe passes with:

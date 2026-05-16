@@ -311,6 +311,38 @@ For local tiny model paths, the test passes `--model-id Wan2.1-T2V-1.3B-Diffuser
 `--model-id FastWan2.1-T2V-1.3B-Diffusers` so SGLang resolves the same native Wan/FastWan configuration it would use
 for the official Hugging Face repos.
 
+Run real SGLang Diffusion FastWan VSA validation from the isolated SGLang environment, not from the main `.venv`:
+
+```bash
+bash scripts/install_sglang_diffusion.sh
+source .venv_sglangcuda12/bin/activate
+export PATH="$PWD/.venv_sglangcuda12/bin:/usr/local/bin:/usr/bin:/bin"
+export CC=/usr/bin/gcc
+export CXX=/usr/bin/g++
+export CUDA_HOME="$PWD/.venv_sglangcuda12/lib/python3.12/site-packages/nvidia"
+mkdir -p artifacts/backend-videos/sglang-fastwan-vsa
+timeout 300s sglang generate \
+  --model-path FastVideo/FastWan2.1-T2V-1.3B-Diffusers \
+  --attention-backend=video_sparse_attn \
+  --VSA-sparsity=0.5 \
+  --num-gpus=1 \
+  --prompt "A calm ocean wave at sunrise" \
+  --height=448 \
+  --width=832 \
+  --num-frames=61 \
+  --num-inference-steps=3 \
+  --seed=123 \
+  --save-output \
+  --output-path artifacts/backend-videos/sglang-fastwan-vsa \
+  --output-file-name fastwan-vsa-smoke.mp4
+test -s artifacts/backend-videos/sglang-fastwan-vsa/fastwan-vsa-smoke.mp4
+```
+
+The validated local run on May 15, 2026 generated
+`artifacts/backend-videos/sglang-fastwan-vsa/fastwan-vsa-smoke.mp4` with
+`FastVideo/FastWan2.1-T2V-1.3B-Diffusers`, `attention_backend=video_sparse_attn`, and `VSA_sparsity=0.5`. See
+`references/sglang-diffusion.md` for the full install guide, probes, and failure modes.
+
 The FastVideo test sets `CC=/usr/bin/gcc`, `CXX=/usr/bin/g++`, and `FASTVIDEO_ATTENTION_BACKEND=VIDEO_SPARSE_ATTN`
 inside the test before importing FastVideo. This avoids Triton picking the Miniconda compiler/linker from the shell.
 The tiny FastWan test uses `FASTVIDEO_ATTENTION_BACKEND=TORCH_SDPA` to keep the debugging fixture independent of the
@@ -321,12 +353,12 @@ On this host, `nvidia-smi` reports driver `550.127.08` with CUDA `12.4`. The pre
 used `torch==2.11.0+cu126`, which could import but failed during CUDA generation with
 `CUDA driver version is insufficient for CUDA runtime version` or `CUDNN_STATUS_NOT_INITIALIZED`. The local `.venv`
 now uses the CUDA 12.4 Torch stack described below.
-Installing the current
+Installing the current unpinned
 `sglang[diffusion]` package pulled `sglang==0.5.11` and `sglang-kernel==0.4.2`, whose kernel extension needs CUDA 13
 runtime libraries. Adding those libraries to `LD_LIBRARY_PATH` lets `sglang generate --help` start, but generation
-fails during NCCL initialization with `CUDA driver version is insufficient for CUDA runtime version`. Use a CUDA-12
-SGLang build/container or a newer NVIDIA driver before treating the SGLang slow test as an expected pass on this
-machine.
+fails during NCCL initialization with `CUDA driver version is insufficient for CUDA runtime version`. The working local
+path is the pinned isolated stack installed by `scripts/install_sglang_diffusion.sh`: `sglang==0.5.5`,
+`torch==2.8.0+cu128`, `sgl-kernel==0.3.16.post5`, `vsa==0.0.4`, and `cuda-python==12.9.6`.
 
 The local FastVideo stack is pinned to a driver-compatible CUDA 12.4 Torch runtime:
 
@@ -347,8 +379,61 @@ uv pip install --no-deps fastvideo==0.1.7
 FastVideo worker subprocesses import FastVideo independently and `fastvideo==0.1.7` writes
 `torch._dynamo.config.recompile_limit`, a key that does not exist in `torch==2.6.0`.
 
-An isolated uv environment at `.venv_sglangcuda12` was tested for the CUDA-12 route. `torch==2.6.0+cu124` works there
-with a minimal CUDA/cuDNN probe, but SGLang Diffusion starts at `sglang==0.5.5`, which pins `torch==2.8.0`, and PyTorch
-does not publish `torch==2.8.0+cu124`. Forcing `sglang==0.5.5` onto `torch==2.6.0+cu124` with the available cu124
-`sgl-kernel` wheels fails before the CLI starts because `sgl_kernel` cannot load `common_ops` due a torch C++ ABI
-symbol mismatch. Treat `.venv_sglangcuda12` as a diagnostic environment, not a passing backend environment.
+The failed CUDA-12.4 experiment is documented in `references/troubleshooting.md`: forcing `sglang==0.5.5` onto
+`torch==2.6.0+cu124` fails before the CLI starts because `sgl_kernel` cannot load `common_ops` due a torch C++ ABI
+symbol mismatch. Letting `sglang==0.5.5` use its declared `torch==2.8.0` wheel installs PyTorch's CUDA 12.8 runtime,
+which passed the local CUDA probe and the FastWan VSA smoke run on this driver.
+
+## Video Backend Server
+
+Use the provider-neutral video backend when you want to call local SGLang through an HTTP API instead of invoking
+`sglang generate` directly. The first enabled provider is the local SGLang FastWan VSA path; fal.ai, Google Veo, and xAI
+Grok Imagine are exposed as disabled capabilities so their adapters can be added without changing the API contract.
+
+One-time setup:
+
+```bash
+bash scripts/setup_video_backend.sh
+```
+
+The setup command uses `uv sync --inexact` for the main `.venv` so it installs the server dependencies without removing
+working local ML packages that are not represented in `pyproject.toml`.
+
+Start the server:
+
+```bash
+source .venv/bin/activate
+python scripts/serve_video_backend.py --host 127.0.0.1 --port 8000
+```
+
+Submit a local SGLang FastWan VSA job:
+
+```bash
+curl -X POST http://127.0.0.1:8000/v1/video/generations \
+  -H "Content-Type: application/json" \
+  -d '{
+    "provider": "sglang",
+    "model": "FastVideo/FastWan2.1-T2V-1.3B-Diffusers",
+    "mode": "text_to_video",
+    "prompt": "A calm ocean wave at sunrise",
+    "options": {
+      "height": 448,
+      "width": 832,
+      "num_frames": 61,
+      "num_inference_steps": 3,
+      "seed": 123,
+      "attention_backend": "video_sparse_attn",
+      "vsa_sparsity": 0.5
+    }
+  }'
+```
+
+Poll the returned job id and download the video:
+
+```bash
+curl http://127.0.0.1:8000/v1/video/generations/<job_id>
+curl -L -o output.mp4 http://127.0.0.1:8000/v1/video/generations/<job_id>/video
+```
+
+Server outputs are written under `artifacts/video-backend/`. See `references/video-backend.md` for the full API
+contract, provider capability response, logs endpoint, and local SGLang runtime details.

@@ -16,7 +16,7 @@ The goal is to prove the runtime stack is coherent before running any model. SGL
 1. Keep SGLang isolated from the main FastVideo/Diffusers environment unless the dependency pins are already known to be compatible.
 2. Check the host driver and maximum supported CUDA runtime first:
    - `nvidia-smi`
-   - `ldconfig -p | grep -E 'libcuda|libcudnn'`
+   - `ldconfig -p | grep -E 'libcuda|libcudnn'` if `ldconfig` is available
 3. Select a PyTorch CUDA wheel that the host driver can execute.
 4. Run a real CUDA/cuDNN probe before importing SGLang.
 5. Inspect SGLang package pins and the installed kernel package:
@@ -72,6 +72,10 @@ Then run:
 
 ```bash
 source .venv_sglangcuda12/bin/activate
+export PATH="$PWD/.venv_sglangcuda12/bin:/usr/local/bin:/usr/bin:/bin"
+export CC=/usr/bin/gcc
+export CXX=/usr/bin/g++
+export CUDA_HOME="$PWD/.venv_sglangcuda12/lib/python3.12/site-packages/nvidia"
 sglang generate --help
 ```
 
@@ -81,12 +85,16 @@ Treat an import error here as a stack failure. Do not move on to model execution
 
 On the host with NVIDIA driver `550.127.08` and CUDA `12.4` reported by `nvidia-smi`:
 
-- `torch==2.6.0+cu124` passed a CUDA bf16 `Conv3d` probe in `.venv_sglangcuda12`.
-- Current `sglang[diffusion]` pulled CUDA-13 runtime/kernel expectations and failed on this driver with `CUDA driver version is insufficient for CUDA runtime version`.
-- `sglang==0.5.5` pins `torch==2.8.0`.
+- Current unpinned `sglang[diffusion]` pulled CUDA-13 runtime/kernel expectations and failed on this driver with `CUDA driver version is insufficient for CUDA runtime version`.
+- `sglang==0.5.5` pins `torch==2.8.0`; letting that resolve to PyTorch's CUDA 12.8 wheel passed the CUDA bf16 `Conv3d` probe and `sglang generate --help`.
+- The working isolated package set is `sglang==0.5.5`, `torch==2.8.0+cu128`, `sgl-kernel==0.3.16.post5`, `vsa==0.0.4`, `cuda-python==12.9.6`, and `pytest==9.0.3`.
+- No `nvidia-*-cu13` runtime packages were installed in the working stack.
+- `FastVideo/FastWan2.1-T2V-1.3B-Diffusers` ran successfully with `--attention-backend=video_sparse_attn` and `--VSA-sparsity=0.5`, writing `artifacts/backend-videos/sglang-fastwan-vsa/fastwan-vsa-smoke.mp4`.
+- `torch==2.6.0+cu124` passed a CUDA bf16 `Conv3d` probe, but that forced route did not work for SGLang.
 - No `torch==2.8.0+cu124` wheel was available on the PyTorch cu124 index.
 - Forcing `sglang==0.5.5` onto `torch==2.6.0+cu124` with cu124 `sgl-kernel` wheels failed before `sglang generate --help` with a torch C++ ABI symbol mismatch.
 - A local `sgl-kernel` source build against `torch==2.6.0+cu124` needed compiler, CMake policy, CUDA, and NVTX path fixes. Treat that route as a production build attempt, not a quick foreground debug command.
+- Use `scripts/install_sglang_diffusion.sh` and `references/sglang-diffusion.md` as the reproducible local path.
 
 ## Decision Rules
 
