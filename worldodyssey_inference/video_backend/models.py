@@ -4,7 +4,11 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+
+DEFAULT_TEXT_TO_VIDEO_MODEL = "FastVideo/FastWan2.1-T2V-1.3B-Diffusers"
+DEFAULT_IMAGE_TO_VIDEO_MODEL = "FastVideo/FastWan2.2-TI2V-5B-Diffusers"
 
 
 class VideoMode(str, Enum):
@@ -49,16 +53,47 @@ class VideoGenerationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     provider: str = "sglang"
-    model: str = "FastVideo/FastWan2.1-T2V-1.3B-Diffusers"
+    model: str = DEFAULT_TEXT_TO_VIDEO_MODEL
     mode: VideoMode = VideoMode.TEXT_TO_VIDEO
     prompt: str
     negative_prompt: str | None = None
+    image_path: str | None = None
     image_url: str | None = None
     image_base64: str | None = None
     end_image_url: str | None = None
     reference_image_urls: list[str] = Field(default_factory=list)
     video_url: str | None = None
     options: VideoGenerationOptions = Field(default_factory=VideoGenerationOptions)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def default_mode_and_model(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        data = dict(data)
+
+        has_image_input = any(
+            data.get(field)
+            for field in ("image_path", "image_url", "image_base64", "end_image_url", "reference_image_urls")
+        )
+        if "mode" not in data and has_image_input:
+            data["mode"] = VideoMode.IMAGE_TO_VIDEO.value
+
+        if "model" not in data or data.get("model") is None:
+            mode = data.get("mode", VideoMode.TEXT_TO_VIDEO.value)
+            if mode == VideoMode.IMAGE_TO_VIDEO.value:
+                data["model"] = DEFAULT_IMAGE_TO_VIDEO_MODEL
+            else:
+                data["model"] = DEFAULT_TEXT_TO_VIDEO_MODEL
+
+        return data
+
+
+class VideoGenerationBatchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    requests: list[VideoGenerationRequest] = Field(..., min_length=1, max_length=100)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -89,6 +124,17 @@ class VideoJobRecord(BaseModel):
     metrics: dict[str, Any] = Field(default_factory=dict)
     error: ErrorInfo | None = None
     log_path: str | None = None
+
+
+class VideoGenerationBatchRecord(BaseModel):
+    id: str
+    status: JobStatus
+    created_at: str
+    updated_at: str
+    request: VideoGenerationBatchRequest
+    job_ids: list[str]
+    jobs: list[VideoJobRecord] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class ProviderCapability(BaseModel):

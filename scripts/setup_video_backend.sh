@@ -29,12 +29,20 @@ cat <<'EOF'
 
 Video backend setup complete.
 
-Start the server with:
+Start native SGLang first, for example:
+  WORLDODYSSEY_SGLANG_WORKLOAD_TYPE=t2v \
+  WORLDODYSSEY_SGLANG_NUM_GPUS=1 \
+  bash scripts/serve_sglang_diffusion.sh FastVideo/FastWan2.1-T2V-1.3B-Diffusers \
+    --attention-backend video_sparse_attn \
+    --VSA-sparsity 0.5
+
+Then start the provider-neutral backend in another shell:
+  export WORLDODYSSEY_SGLANG_BASE_URL=http://127.0.0.1:30000
   source .venv/bin/activate
   python scripts/serve_video_backend.py --host 127.0.0.1 --port 8000
 
 Submit a local SGLang FastWan VSA job with:
   curl -X POST http://127.0.0.1:8000/v1/video/generations \
     -H "Content-Type: application/json" \
-    -d '{"provider":"sglang","model":"FastVideo/FastWan2.1-T2V-1.3B-Diffusers","mode":"text_to_video","prompt":"A calm ocean wave at sunrise","options":{"height":448,"width":832,"num_frames":61,"num_inference_steps":3,"seed":123,"attention_backend":"video_sparse_attn","vsa_sparsity":0.5}}'
+    -d '{"provider":"sglang","model":"FastVideo/FastWan2.1-T2V-1.3B-Diffusers","mode":"text_to_video","prompt":"A calm ocean wave at sunrise","options":{"height":448,"width":832,"num_frames":61,"timeout_seconds":600}}'
 EOF

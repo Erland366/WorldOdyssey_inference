@@ -103,6 +103,26 @@ On the host with NVIDIA driver `550.127.08` and CUDA `12.4` reported by `nvidia-
 - Prefer an official SGLang container or a matched prebuilt wheel set over mixing SGLang, Torch, and kernel wheels across releases.
 - Keep the main `.venv` stable for FastVideo/Diffusers unless the user explicitly wants to switch the project stack.
 
+## Backend API Notes
+
+The provider-neutral backend launches SGLang from `.venv_sglangcuda12` while the server itself runs from `.venv`. Keep
+this separation unless a new compatibility pass proves both stacks can share one environment.
+
+The server injects these runtime guards when calling SGLang:
+
+```text
+PATH=<repo>/.venv_sglangcuda12/bin:/usr/local/bin:/usr/bin:/bin
+CC=/usr/bin/gcc
+CXX=/usr/bin/g++
+CUDA_HOME=<repo>/.venv_sglangcuda12/lib/python3.12/site-packages/nvidia
+```
+
+For local T2V validation, use `FastVideo/FastWan2.1-T2V-1.3B-Diffusers` with `video_sparse_attn` and
+`VSA-sparsity=0.5`.
+
+For local I2V, the default API model is `FastVideo/FastWan2.2-TI2V-5B-Diffusers`; do not force VSA on that path. If VSA
+is required for I2V, use an explicitly supported Wan2.1 I2V VSA model and validate it separately.
+
 ## Slow Backend Test
 
 After the stack passes the probes, run the optional SGLang backend test:

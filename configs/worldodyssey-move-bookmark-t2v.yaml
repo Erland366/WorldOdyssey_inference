@@ -1,0 +1,23 @@
+task: compiled_resources/worldodyssey/WorldOdyssey/inputs/move_bookmark
+backend_url: http://127.0.0.1:8000
+
+# Optional prompt prefix. By default the submitted prompt is only the WorldOdyssey `task` field.
+# adapter:
+#   prompt_prefix: Generate an egocentric first-person video.
+
+request:
+  provider: sglang
+  mode: text_to_video
+  model: FastVideo/FastWan2.1-T2V-1.3B-Diffusers
+  options:
+    height: 448
+    width: 832
+    num_frames: 61
+    timeout_seconds: 600
+
+run:
+  dry_run: false
+  wait: true
+  poll_interval_seconds: 5
+  wait_timeout_seconds: 600
+  download_path: artifacts/video-backend/worldodyssey-move-bookmark.mp4

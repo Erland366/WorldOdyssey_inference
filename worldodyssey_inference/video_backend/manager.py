@@ -7,6 +7,8 @@ from worldodyssey_inference.video_backend.models import (
     ErrorInfo,
     JobStatus,
     ProviderCapability,
+    VideoGenerationBatchRecord,
+    VideoGenerationBatchRequest,
     VideoGenerationRequest,
     VideoJobRecord,
     VideoOutput,
@@ -48,10 +50,48 @@ class VideoJobManager:
         return [provider.capability for provider in self.providers.values()]
 
     def submit(self, request: VideoGenerationRequest) -> VideoJobRecord:
+        self._validate_request(request)
+        return self._submit_validated(request)
+
+    def submit_batch(self, request: VideoGenerationBatchRequest) -> VideoGenerationBatchRecord:
+        for item in request.requests:
+            self._validate_request(item)
+
+        now = utc_now_iso()
+        batch_id = self.store.new_batch_id()
+        records = [self._submit_validated(item) for item in request.requests]
+        batch_record = VideoGenerationBatchRecord(
+            id=batch_id,
+            status=self._batch_status(records),
+            created_at=now,
+            updated_at=now,
+            request=request,
+            job_ids=[record.id for record in records],
+            jobs=records,
+            metadata=request.metadata,
+        )
+        self.store.write_batch(batch_record)
+        return self.get_batch(batch_id)
+
+    def get_batch(self, batch_id: str) -> VideoGenerationBatchRecord:
+        batch_record = self.store.read_batch(batch_id)
+        jobs = [self.store.read(job_id) for job_id in batch_record.job_ids]
+        batch_record.jobs = jobs
+        batch_record.status = self._batch_status(jobs)
+        batch_record.updated_at = self._batch_updated_at(batch_record, jobs)
+        self.store.write_batch(batch_record)
+        return batch_record
+
+    def list_batches(self, *, limit: int = 100) -> list[VideoGenerationBatchRecord]:
+        return [self.get_batch(batch.id) for batch in self.store.list_batches(limit=limit)]
+
+    def _validate_request(self, request: VideoGenerationRequest) -> None:
         provider = self.providers.get(request.provider)
         if provider is None:
             raise UnknownProviderError(f"Unknown provider {request.provider!r}.")
         provider.validate_request(request)
+
+    def _submit_validated(self, request: VideoGenerationRequest) -> VideoJobRecord:
         now = utc_now_iso()
         job_id = self.store.new_job_id()
         paths = self.store.paths_for(job_id)
@@ -119,3 +159,25 @@ class VideoJobManager:
     @staticmethod
     def _raise_unexpected_worker_error(future: Future[None]) -> None:
         future.result()
+
+    @staticmethod
+    def _batch_status(jobs: list[VideoJobRecord]) -> JobStatus:
+        statuses = {job.status for job in jobs}
+        if statuses == {JobStatus.SUCCEEDED}:
+            return JobStatus.SUCCEEDED
+        if JobStatus.RUNNING in statuses:
+            return JobStatus.RUNNING
+        if JobStatus.QUEUED in statuses:
+            if statuses == {JobStatus.QUEUED}:
+                return JobStatus.QUEUED
+            return JobStatus.RUNNING
+        if JobStatus.FAILED in statuses:
+            return JobStatus.FAILED
+        if JobStatus.CANCELLED in statuses:
+            return JobStatus.CANCELLED
+        return JobStatus.FAILED
+
+    @staticmethod
+    def _batch_updated_at(batch_record: VideoGenerationBatchRecord, jobs: list[VideoJobRecord]) -> str:
+        timestamps = [batch_record.updated_at, *(job.updated_at for job in jobs)]
+        return max(timestamps)

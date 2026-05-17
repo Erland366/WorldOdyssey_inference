@@ -82,6 +82,60 @@ python scripts/create_tiny_wan_debug_pipeline.py --recipe wan2.1-t2v-1.3b --over
 The Diffusers backend test now performs this rebuild automatically when `artifacts/tiny-wan2.1-t2v-debug` is missing
 `tokenizer/spiece.model`.
 
+## SGLang Tiny Wan Tokenizer Rejects `extra_special_tokens`
+
+Cause: `Erland/tiny-wan2.1-t2v-debug` stores `tokenizer/tokenizer_config.json` with list-shaped
+`extra_special_tokens`. The SGLang/Transformers tokenizer load path used here expects a mapping and fails with:
+
+```text
+AttributeError: 'list' object has no attribute 'keys'
+```
+
+Fix: Do not mutate the Hugging Face cache from the backend. The current backend requires a native SGLang Diffusion
+server; if a tiny artifact fails this tokenizer load path, repair or stage the artifact explicitly before starting
+SGLang, then point the backend at that running server with `WORLDODYSSEY_SGLANG_BASE_URL`.
+
+## SGLang CLI Ignores Wan Sampling Dimensions
+
+Cause: For WanPipeline repos with model-specific sampling classes, `sglang generate` builds generic CLI sampling params
+and then merges them with the model defaults. Fields such as `height`, `width`, `num_frames`, and
+`num_inference_steps` are defined by those model-specific classes, so SGLang's merge logic can preserve model defaults
+instead of the CLI values. This was observed both for the tiny Wan debug model and
+`weizhou03/Wan2.1-Fun-1.3B-InP-Diffusers`.
+
+Fix: Do not use `sglang generate` as the backend path. The current video backend talks only to the native SGLang
+Diffusion server through `/v1/videos`. Request-time shape fields are mapped to SGLang's native payload, while
+one-shot-only fields such as `num_inference_steps` and `seed` are rejected instead of being silently routed through
+another runner.
+
+## SGLang Diffusion `serve` CLI Rejects `--workload-type`
+
+Cause: In the pinned `sglang==0.5.5` stack, the diffusion `sglang serve` CLI leaves `--workload-type` as a string and
+then asserts that it is already a `WorkloadType` enum. The failure looks like:
+
+```text
+AssertionError: Workload type must be a WorkloadType enum, got <class 'str'>
+```
+
+Fix: Use `scripts/serve_sglang_diffusion.sh`. It calls `scripts/sglang_diffusion_serve.py`, which builds the same
+SGLang diffusion `ServerArgs`, converts the enum fields correctly, and launches SGLang's native diffusion server with
+`launch_server`. This is still the persistent native server path; it is not one-shot generation.
+
+## SGLang `/v1/videos` Crashes Before Creating A Job
+
+Cause: In the pinned SGLang 0.5.x diffusion stack, the native `/v1/videos` handler calls
+`sampling_params.log(server_args)` before it has generated `sampling_params.output_file_name`. The failure appears in
+the SGLang server log as:
+
+```text
+TypeError: join() argument must be str, bytes, or os.PathLike object, not 'NoneType'
+```
+
+Fix: Use `scripts/serve_sglang_diffusion.sh` instead of invoking the SGLang Python entrypoint directly. Its
+`scripts/sglang_diffusion_serve.py` launcher applies a narrow compatibility patch that calls
+`SamplingParams.set_output_file_name()` before SGLang logs and registers the native video job. This keeps generation on
+the persistent native `/v1/videos` server path.
+
 ## CUDA Runtime Is Newer Than The Host Driver Supports
 
 Cause: `torch.cuda.is_available()` only proves that CUDA can be discovered. Distributed or generation workloads can
@@ -213,7 +267,7 @@ This stack avoids `sglang-kernel` and `nvidia-*-cu13` packages. It needs `CUDA_H
 package and a sanitized `PATH` so Triton uses `/usr/bin/ld` instead of the Miniconda linker. See
 `references/sglang-diffusion.md` for the full guide.
 
-The current SGLang backend test is intentionally marked slow and optional:
+The legacy low-level SGLang CLI test is intentionally marked slow and optional:
 
 ```bash
 source .venv/bin/activate
@@ -221,7 +275,39 @@ python -m pytest tests/backends/test_sglang_tiny_wan.py -m slow -s
 ```
 
 If `sglang` is absent, the test skips. If `sglang` is installed but the runtime stack is incompatible, the test fails
-with the real `sglang generate` output.
+with the real `sglang generate` output. This is not the provider-neutral backend path.
+
+## SGLang Rejects Per-Request VSA Or GPU Settings
+
+Cause: Native SGLang `/v1/videos` does not accept launch-time fields such as `attention_backend`, `vsa_sparsity`, or
+`num_gpus` in each request. The local backend does not maintain a model allowlist and does not invent a fallback runner.
+
+The request fails fast with `unsupported_request`. Inspect the job response or log for the exact rejected field:
+
+```bash
+curl http://127.0.0.1:8000/v1/video/generations/<job_id>/logs
+```
+
+Fix: Omit `options.attention_backend`, `options.vsa_sparsity`, and `options.num_gpus` from YAML/API requests. Configure
+those values when starting `scripts/serve_sglang_diffusion.sh`.
+
+## WorldOdyssey Image Input Uses T2V Defaults
+
+Cause: Older direct CLI invocations could switch to I2V while still passing T2V defaults such as `448x832`, `61`
+frames, and FastWan VSA settings.
+
+Fix: Use the mode-aware shortcut or YAML config:
+
+```bash
+source .venv/bin/activate
+python scripts/submit_worldodyssey_task.py --i2v --dry-run
+
+source .venv/bin/activate
+python scripts/submit_worldodyssey_task.py --config configs/worldodyssey-move-bookmark-i2v.yaml --dry-run
+```
+
+Only override I2V shape fields intentionally. The expected default I2V request uses `480x832`, `81` frames, and no VSA
+settings for `FastVideo/FastWan2.2-TI2V-5B-Diffusers`.
 
 ### Working `.venv_sglangcuda12` FastWan VSA Validation
 

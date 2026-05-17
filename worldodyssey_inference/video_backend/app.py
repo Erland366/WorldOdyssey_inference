@@ -9,6 +9,8 @@ from worldodyssey_inference.video_backend.manager import UnknownProviderError, V
 from worldodyssey_inference.video_backend.models import (
     JobStatus,
     ProviderListResponse,
+    VideoGenerationBatchRecord,
+    VideoGenerationBatchRequest,
     VideoGenerationRequest,
     VideoJobRecord,
 )
@@ -49,6 +51,28 @@ def create_app(
             raise HTTPException(status_code=501, detail=str(exc)) from exc
         except ProviderError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/v1/video/generation-batches", response_model=VideoGenerationBatchRecord, status_code=202)
+    def submit_generation_batch(request: VideoGenerationBatchRequest) -> VideoGenerationBatchRecord:
+        try:
+            return video_manager.submit_batch(request)
+        except UnknownProviderError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except ProviderUnavailableError as exc:
+            raise HTTPException(status_code=501, detail=str(exc)) from exc
+        except ProviderError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/v1/video/generation-batches", response_model=list[VideoGenerationBatchRecord])
+    def list_generation_batches(limit: int = Query(default=100, ge=1, le=500)) -> list[VideoGenerationBatchRecord]:
+        return video_manager.list_batches(limit=limit)
+
+    @app.get("/v1/video/generation-batches/{batch_id}", response_model=VideoGenerationBatchRecord)
+    def get_generation_batch(batch_id: str) -> VideoGenerationBatchRecord:
+        try:
+            return video_manager.get_batch(batch_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=f"Unknown batch {batch_id!r}.") from exc
 
     @app.get("/v1/video/generations", response_model=list[VideoJobRecord])
     def list_generations(limit: int = Query(default=100, ge=1, le=500)) -> list[VideoJobRecord]:

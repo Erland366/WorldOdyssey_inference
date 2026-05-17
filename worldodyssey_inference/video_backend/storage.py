@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from worldodyssey_inference.video_backend.models import VideoJobRecord
+from worldodyssey_inference.video_backend.models import VideoGenerationBatchRecord, VideoJobRecord
 
 
 JOB_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
@@ -23,19 +23,30 @@ class JobPaths:
     record_path: Path
 
 
+@dataclass(frozen=True)
+class BatchPaths:
+    batch_id: str
+    record_path: Path
+
+
 class JobStore:
     def __init__(self, root: Path) -> None:
         self.root = root
         self.records_dir = root / "jobs"
+        self.batches_dir = root / "batches"
         self.videos_dir = root / "videos"
         self.logs_dir = root / "logs"
         self._lock = threading.Lock()
-        for directory in (self.records_dir, self.videos_dir, self.logs_dir):
+        for directory in (self.records_dir, self.batches_dir, self.videos_dir, self.logs_dir):
             directory.mkdir(parents=True, exist_ok=True)
 
     def new_job_id(self) -> str:
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         return f"vid_{timestamp}_{secrets.token_hex(4)}"
+
+    def new_batch_id(self) -> str:
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        return f"batch_{timestamp}_{secrets.token_hex(4)}"
 
     def paths_for(self, job_id: str) -> JobPaths:
         self._validate_job_id(job_id)
@@ -46,6 +57,13 @@ class JobStore:
             output_path=job_dir / "output.mp4",
             log_path=self.logs_dir / f"{job_id}.log",
             record_path=self.records_dir / f"{job_id}.json",
+        )
+
+    def batch_paths_for(self, batch_id: str) -> BatchPaths:
+        self._validate_job_id(batch_id)
+        return BatchPaths(
+            batch_id=batch_id,
+            record_path=self.batches_dir / f"{batch_id}.json",
         )
 
     def write(self, record: VideoJobRecord) -> None:
@@ -67,6 +85,29 @@ class JobStore:
         records: list[VideoJobRecord] = []
         for path in sorted(self.records_dir.glob("*.json"), reverse=True):
             records.append(VideoJobRecord.model_validate_json(path.read_text(encoding="utf-8")))
+            if len(records) >= limit:
+                break
+        return records
+
+    def write_batch(self, record: VideoGenerationBatchRecord) -> None:
+        paths = self.batch_paths_for(record.id)
+        paths.record_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = record.model_dump(mode="json", exclude={"jobs"})
+        tmp_path = paths.record_path.with_suffix(".json.tmp")
+        with self._lock:
+            tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            tmp_path.replace(paths.record_path)
+
+    def read_batch(self, batch_id: str) -> VideoGenerationBatchRecord:
+        paths = self.batch_paths_for(batch_id)
+        if not paths.record_path.exists():
+            raise KeyError(batch_id)
+        return VideoGenerationBatchRecord.model_validate_json(paths.record_path.read_text(encoding="utf-8"))
+
+    def list_batches(self, *, limit: int = 100) -> list[VideoGenerationBatchRecord]:
+        records: list[VideoGenerationBatchRecord] = []
+        for path in sorted(self.batches_dir.glob("*.json"), reverse=True):
+            records.append(VideoGenerationBatchRecord.model_validate_json(path.read_text(encoding="utf-8")))
             if len(records) >= limit:
                 break
         return records

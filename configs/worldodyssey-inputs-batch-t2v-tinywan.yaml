@@ -1,0 +1,24 @@
+task: compiled_resources/worldodyssey/WorldOdyssey/inputs
+backend_url: http://127.0.0.1:8000
+
+# The submitter expands direct child folders with task.json into one batch request.
+# Child entries without task.json are recorded in batch metadata as skipped_entries.
+# adapter:
+#   prompt_prefix: Generate an egocentric first-person video.
+
+request:
+  provider: sglang
+  mode: text_to_video
+  model: Erland/tiny-wan2.1-t2v-debug
+  options:
+    height: 64
+    width: 64
+    num_frames: 5
+    timeout_seconds: 300
+
+run:
+  dry_run: false
+  wait: true
+  poll_interval_seconds: 5
+  wait_timeout_seconds: 600
+  download_dir: artifacts/video-backend/worldodyssey-inputs

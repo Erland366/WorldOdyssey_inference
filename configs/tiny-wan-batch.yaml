@@ -1,0 +1,31 @@
+backend_url: http://127.0.0.1:8000
+
+requests:
+  - provider: sglang
+    model: Erland/tiny-wan2.1-t2v-debug
+    mode: text_to_video
+    prompt: A camera glides over a quiet city street at night.
+    options:
+      height: 64
+      width: 64
+      num_frames: 5
+      timeout_seconds: 300
+  - provider: sglang
+    model: Erland/tiny-wan2.1-t2v-debug
+    mode: text_to_video
+    prompt: A tiny toy boat floats across a still pond.
+    options:
+      height: 64
+      width: 64
+      num_frames: 5
+      timeout_seconds: 300
+
+metadata:
+  purpose: tiny-wan-batch-debug
+  model_source: https://huggingface.co/Erland/tiny-wan2.1-t2v-debug
+
+run:
+  dry_run: false
+  wait: true
+  poll_interval_seconds: 5
+  wait_timeout_seconds: 900
