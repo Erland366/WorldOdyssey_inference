@@ -5,16 +5,20 @@ Provider-neutral SGLang Diffusion pipeline for WorldOdyssey video inference.
 The primary local path is:
 
 - FastAPI backend in the main `.venv`
-- isolated SGLang Diffusion runtime in `.venv_sglangcuda12`
+- isolated SGLang Diffusion runtime in `.venv_sglang`
 - local provider id: `sglang`
 - native SGLang server launcher: `scripts/serve_sglang_diffusion.sh`
+- optional launcher memory offload preset: `WORLDODYSSEY_SGLANG_OFFLOAD_PRESET=memory`
 - validated T2V model: `FastVideo/FastWan2.1-T2V-1.3B-Diffusers`
 - validated T2V attention backend: `video_sparse_attn` with `vsa_sparsity=0.5`
+- validated FP8 model pair: `hunyuanvideo-community/HunyuanVideo` with
+  `lmsys/hunyuanvideo-modelopt-fp8-sglang-transformer`
 - default I2V model: `FastVideo/FastWan2.2-TI2V-5B-Diffusers`
 - tiny T2V debug model: `Erland/tiny-wan2.1-t2v-debug`
 
 There is no local one-shot generation fallback. The backend requires an already-running native SGLang Diffusion server
-and calls SGLang's `/v1/videos` API.
+and calls SGLang's `/v1/videos` API. The normal server path uses one native multipart SGLang server for FastWan,
+Hunyuan FP8, I2V, and tiny debug runs.
 
 The server exposes single-job and batch APIs:
 
@@ -64,7 +68,7 @@ bash scripts/setup_video_backend.sh
 This command:
 
 - installs main backend dependencies into `.venv` with `uv sync --inexact`
-- installs the pinned SGLang Diffusion runtime into `.venv_sglangcuda12`
+- installs the unified SGLang Diffusion runtime into `.venv_sglang`
 - keeps SGLang isolated from the main Diffusers/FastVideo environment
 - verifies the main server packages after installation
 
@@ -75,7 +79,6 @@ Do not use conda for this setup unless explicitly approved. Do not use `uv run`.
 Start the native SGLang Diffusion server first. For the FastWan T2V VSA path:
 
 ```bash
-WORLDODYSSEY_SGLANG_WORKLOAD_TYPE=t2v \
 WORLDODYSSEY_SGLANG_NUM_GPUS=1 \
 bash scripts/serve_sglang_diffusion.sh FastVideo/FastWan2.1-T2V-1.3B-Diffusers \
   --attention-backend video_sparse_attn \
@@ -86,14 +89,75 @@ For I2V, start a matching I2V workload and model:
 
 ```bash
 WORLDODYSSEY_SGLANG_WORKLOAD_TYPE=i2v \
-WORLDODYSSEY_SGLANG_NUM_GPUS=2 \
+WORLDODYSSEY_SGLANG_OFFLOAD_PRESET=memory \
+WORLDODYSSEY_SGLANG_LOG_LEVEL=debug \
+WORLDODYSSEY_SGLANG_NUM_GPUS=1 \
 bash scripts/serve_sglang_diffusion.sh weizhou03/Wan2.1-Fun-1.3B-InP-Diffusers
 ```
 
-The launcher prints the backend URL and an optional model hint:
+For Hunyuan FP8, use the same native server launcher and pass the FP8 transformer override:
+
+```bash
+WORLDODYSSEY_SGLANG_OFFLOAD_PRESET=memory \
+WORLDODYSSEY_SGLANG_LOG_LEVEL=debug \
+WORLDODYSSEY_SGLANG_NUM_GPUS=2 \
+WORLDODYSSEY_SGLANG_TP_SIZE=1 \
+WORLDODYSSEY_SGLANG_SP_DEGREE=2 \
+bash scripts/serve_sglang_diffusion.sh hunyuanvideo-community/HunyuanVideo \
+  --transformer-path lmsys/hunyuanvideo-modelopt-fp8-sglang-transformer
+```
+
+### Memory Offload
+
+Use the launcher offload preset when a model starts or runs out of VRAM. This is a startup policy for the persistent
+native SGLang server, not a request YAML field.
+
+```bash
+WORLDODYSSEY_SGLANG_OFFLOAD_PRESET=memory \
+WORLDODYSSEY_SGLANG_LOG_LEVEL=debug \
+WORLDODYSSEY_SGLANG_NUM_GPUS=1 \
+bash scripts/serve_sglang_diffusion.sh weizhou03/Wan2.1-Fun-1.3B-InP-Diffusers
+```
+
+The `memory` preset expands to SGLang-Diffusion's low-memory flags:
+
+```text
+--dit-layerwise-offload
+--dit-cpu-offload false
+--dit-offload-prefetch-size 0
+--text-encoder-cpu-offload
+--image-encoder-cpu-offload
+--vae-cpu-offload
+--pin-cpu-memory
+--vae-tiling
+--vae-slicing
+--vae-config.tile-sample-min-height 128
+--vae-config.tile-sample-min-width 128
+--vae-config.tile-sample-stride-height 96
+--vae-config.tile-sample-stride-width 96
+--vae-config.tile-sample-min-num-frames 8
+--vae-config.tile-sample-stride-num-frames 4
+```
+
+`--dit-offload-prefetch-size 0` is the lowest-memory setting. If the server is stable but too slow, pass a later value
+after the model id, for example `--dit-offload-prefetch-size 0.1`; trailing SGLang flags override the preset because
+the launcher appends them after the preset args. The launcher defaults `SGLANG_ENABLE_DETERMINISTIC_INFERENCE=1` for
+this preset unless you set it yourself; this keeps the low-memory path on native norm fallbacks instead of fragile
+CuTe DSL fused norm kernels. It also defaults `USE_TRITON_W8A8_FP8_KERNEL=1` so ModelOpt FP8 uses SGLang's Triton
+W8A8 FP8 branch instead of the CUTLASS branch that failed on this RTX 4090 host, and defaults
+`SGLANG_DISABLE_FLASHINFER_ROPE=1` so Wan InP uses SGLang's Triton RoPE fallback instead of FlashInfer's JIT path that
+requires `nvcc`. It also defaults `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` unless you set a custom allocator
+config. The VAE tile defaults can be overridden with `WORLDODYSSEY_SGLANG_VAE_TILE_SAMPLE_MIN_HEIGHT`,
+`WORLDODYSSEY_SGLANG_VAE_TILE_SAMPLE_MIN_WIDTH`, `WORLDODYSSEY_SGLANG_VAE_TILE_SAMPLE_STRIDE_HEIGHT`,
+`WORLDODYSSEY_SGLANG_VAE_TILE_SAMPLE_STRIDE_WIDTH`, `WORLDODYSSEY_SGLANG_VAE_TILE_SAMPLE_MIN_NUM_FRAMES`, and
+`WORLDODYSSEY_SGLANG_VAE_TILE_SAMPLE_STRIDE_NUM_FRAMES`, or by passing trailing `--vae-config.*` flags. The launcher
+rejects this preset when `SGLANG_CACHE_DIT_ENABLED=true`.
+
+The launcher prints the backend URL, API format, and an optional model hint:
 
 ```bash
 export WORLDODYSSEY_SGLANG_BASE_URL=http://127.0.0.1:30000
+export WORLDODYSSEY_SGLANG_VIDEO_API_FORMAT=multipart
 export WORLDODYSSEY_SGLANG_MODEL=<loaded-model-id>
 ```
 
@@ -109,6 +173,9 @@ export WORLDODYSSEY_SGLANG_BASE_URL=http://127.0.0.1:30000
 source .venv/bin/activate
 python scripts/serve_video_backend.py --host 127.0.0.1 --port 8000
 ```
+
+`WORLDODYSSEY_SGLANG_VIDEO_API_FORMAT` defaults to `multipart`, matching the unified native server launcher. Set it to
+`json` only when intentionally using the legacy SGLang 0.5.5 wrapper stack.
 
 `WORLDODYSSEY_SGLANG_MODEL` is optional metadata for provider discovery. The backend does not require it and does not
 enforce that it matches each request; the `model` field is forwarded to SGLang's native `/v1/videos` endpoint.
@@ -128,7 +195,7 @@ Expected health response:
 ```
 
 The `sglang` provider should be enabled and list both `text_to_video` and `image_to_video`. The provider capability
-should report `server_api: /v1/videos`.
+should report `server_api: /v1/videos` and the selected `server_api_format`.
 
 For long-lived use, start the same command in tmux after a short foreground validation. Leave the tmux session open so
 logs remain available.
@@ -172,66 +239,32 @@ Download the result after the job reaches `succeeded`:
 curl -L -o output.mp4 http://127.0.0.1:8000/v1/video/generations/<job_id>/video
 ```
 
-## Submit a Tiny Wan Batch
+## Submit Hunyuan FP8
 
-Use the tiny Wan batch config for low-memory API debugging. The batch endpoint creates normal generation jobs and
-tracks them under one `batch_id`; with the default `--job-workers 1`, those jobs run sequentially to avoid local GPU
-OOM.
-
-Dry-run the checked-in batch payload:
+Start SGLang with the Hunyuan FP8 command above, start the FastAPI backend normally, then submit through the same
+provider-neutral JSON API:
 
 ```bash
-source .venv/bin/activate
-python scripts/submit_video_batch.py configs/tiny-wan-batch.yaml --dry-run
-```
-
-Submit it and wait for completion:
-
-```bash
-source .venv/bin/activate
-python scripts/submit_video_batch.py configs/tiny-wan-batch.yaml
-```
-
-Override any item with list indexes:
-
-```bash
-source .venv/bin/activate
-python scripts/submit_video_batch.py configs/tiny-wan-batch.yaml \
-  --set 'requests.0.prompt=A tiny camera circles a glass cube.' \
-  --set requests.1.options.num_frames=5
-```
-
-Direct API shape:
-
-```bash
-curl -X POST http://127.0.0.1:8000/v1/video/generation-batches \
+curl -X POST http://127.0.0.1:8000/v1/video/generations \
   -H "Content-Type: application/json" \
   -d '{
-    "requests": [
-      {
-        "provider": "sglang",
-        "model": "Erland/tiny-wan2.1-t2v-debug",
-        "mode": "text_to_video",
-        "prompt": "A camera glides over a quiet city street at night.",
-        "options": {
-          "height": 64,
-          "width": 64,
-          "num_frames": 5,
-          "timeout_seconds": 300
-        }
-      }
-    ],
-    "metadata": {
-      "purpose": "tiny-wan-batch-debug"
+    "provider": "sglang",
+    "model": "hunyuanvideo-community/HunyuanVideo",
+    "mode": "text_to_video",
+    "prompt": "A tiny red cube rotating on a plain gray background",
+    "options": {
+      "height": 128,
+      "width": 128,
+      "num_frames": 5,
+      "num_inference_steps": 1,
+      "seed": 1,
+      "timeout_seconds": 600
     }
   }'
 ```
 
-Poll the returned batch id:
-
-```bash
-curl http://127.0.0.1:8000/v1/video/generation-batches/<batch_id> | python -m json.tool
-```
+For this FP8 path, the SGLang server receives native multipart fields. The FP8 transformer id belongs on the server
+launcher as `--transformer-path`; request `model` stays as `hunyuanvideo-community/HunyuanVideo`.
 
 ## Run WorldOdyssey
 
@@ -288,6 +321,28 @@ source .venv/bin/activate
 python scripts/submit_worldodyssey_task.py --config configs/worldodyssey-inputs-batch-t2v-tinywan.yaml
 ```
 
+Run the Hunyuan FP8 parent-input smoke config after starting the FP8 server/backend pair:
+
+```bash
+source .venv/bin/activate
+python scripts/submit_worldodyssey_task.py --config configs/worldodyssey-inputs-batch-t2v-hunyuan-fp8.yaml
+```
+
+Run a larger supported 540p FP8 config for visual inspection of one task. Start the Hunyuan FP8 server with
+`WORLDODYSSEY_SGLANG_OFFLOAD_PRESET=memory` first so the low-memory FP8 and VAE tile defaults are active:
+
+```bash
+source .venv/bin/activate
+python scripts/submit_worldodyssey_task.py \
+  --config configs/worldodyssey-move-bookmark-t2v-hunyuan-fp8-visual.yaml
+```
+
+That config writes:
+
+```text
+artifacts/video-backend/worldodyssey-move-bookmark-hunyuan-fp8-visual.mp4
+```
+
 The backend must already be running for the submit commands above.
 
 Dry-run all available task folders under the imported `inputs/` root:
@@ -311,8 +366,8 @@ submissions.
 
 ## I2V Smoke Run
 
-Before running I2V, restart native SGLang with `WORLDODYSSEY_SGLANG_WORKLOAD_TYPE=i2v`. The FastAPI backend can stay
-up if `WORLDODYSSEY_SGLANG_BASE_URL` still points at the same SGLang host and port.
+Before running I2V, restart native SGLang with the target I2V model. The FastAPI backend can stay up if
+`WORLDODYSSEY_SGLANG_BASE_URL` still points at the same SGLang host and port.
 
 Use a short I2V run before production settings:
 
@@ -394,41 +449,107 @@ GET  /v1/videos/<sglang_video_id>
 GET  /v1/videos/<sglang_video_id>/content
 ```
 
-The native SGLang `/v1/videos` request accepts `prompt`, `model`, `size`, `fps`, `num_frames`, optional `seconds`, and
-optional I2V `input_reference`. It does not accept per-request `num_inference_steps`, `seed`, `guidance_scale`,
-`num_gpus`, `attention_backend`, `vsa_sparsity`, or `provider_options`; this backend rejects those fields for `sglang`.
-Configure GPUs, workload type, VSA, and any model/server sampling flags on `scripts/serve_sglang_diffusion.sh`.
+The unified native multipart server path accepts `prompt`, `model`, `size`, `fps`, `num_frames`, optional `seconds`,
+optional I2V `input_reference`, `negative_prompt`, `num_inference_steps`, `seed`, `guidance_scale`, and
+`options.provider_options.request_fields`. Launch-time settings such as GPU count, VSA, tensor parallelism, sequence
+parallelism, FP8 transformer overrides, and memory offload still belong on `scripts/serve_sglang_diffusion.sh`.
 
-For direct stack debugging, activate the isolated environment and use the same runtime guards. In the pinned
-`sglang==0.5.5` stack, `scripts/serve_sglang_diffusion.sh` uses `scripts/sglang_diffusion_serve.py` to call SGLang's
-native diffusion `launch_server` entrypoint directly; this avoids a diffusion CLI enum parsing bug in `sglang serve`
-without adding any one-shot generation path. The same launcher applies a narrow SGLang 0.5.x `/v1/videos`
-compatibility patch that creates the sampling output filename before SGLang logs and registers the native video job.
+For direct stack debugging, activate the isolated environment and use the same runtime guards:
 
 ```bash
-source .venv_sglangcuda12/bin/activate
-export PATH="$PWD/.venv_sglangcuda12/bin:/usr/local/bin:/usr/bin:/bin"
+source .venv_sglang/bin/activate
+export PATH="$PWD/.venv_sglang/bin:/usr/local/bin:/usr/bin:/bin"
 export CC=/usr/bin/gcc
 export CXX=/usr/bin/g++
-export CUDA_HOME="$PWD/.venv_sglangcuda12/lib/python3.12/site-packages/nvidia"
-python scripts/sglang_diffusion_serve.py --help
+export CUDA_HOME="$PWD/.venv_sglang/lib/python3.12/site-packages/nvidia"
+sglang serve --help
 ```
 
-Use `python scripts/sglang_diffusion_serve.py --help` as the installation smoke test for the diffusion server path. Job
-logs created by this backend should start with `SGLang server:` and `POST /v1/videos`.
+Use `sglang serve --help` as the installation smoke test for the diffusion server path. Job logs created by this
+backend should start with `SGLang server:` and `POST /v1/videos`.
 
-The local pinned SGLang stack intentionally avoids the current CUDA-13 `sglang-kernel` path. See
-`references/sglang-diffusion.md` for the full installation and validation notes.
+The unified SGLang stack uses `sglang-kernel==0.4.1` with CUDA 12.8 Torch wheels and should still avoid CUDA 13 runtime
+packages. See `references/sglang-diffusion.md` for the full installation and validation notes.
 
 ## Validated Status
 
 Current validation status:
 
 - provider unit tests cover the native `/v1/videos` create, poll, and download flow using a fake SGLang server
+- provider unit tests cover multipart FP8 request fields and I2V file upload
 - WorldOdyssey parent `inputs/` dry-run expansion into a batch request is covered by tests
 - YAML dry-run and override behavior for T2V/I2V is covered by tests
 - real FastWan T2V VSA server startup was validated with `WORLDODYSSEY_SGLANG_NUM_GPUS=2` until Uvicorn served
   `http://127.0.0.1:30000`
 - the README FastWan T2V curl was validated end to end through the API on 2026-05-17; it completed in 17.0533 seconds
   and wrote `artifacts/video-backend/videos/vid_20260517T185746Z_3497cb08/output.mp4`
+- native Hunyuan FP8 SGLang multipart smoke was validated on 2026-05-18 and wrote
+  `artifacts/video-backend/75a30c04-59f1-4255-ba8c-6ac9aee91d1b.mp4`
+- Hunyuan FP8 was validated through the provider-neutral FastAPI app on 2026-05-18; job
+  `vid_20260518T065703Z_04fe6059` wrote
+  `artifacts/video-backend-api-smoke/videos/vid_20260518T065703Z_04fe6059/output.mp4`
+- the larger WorldOdyssey Hunyuan FP8 visual config was validated end to end on 2026-05-18 with the `memory` preset;
+  job `vid_20260518T113402Z_9c852dfc` wrote
+  `artifacts/video-backend/worldodyssey-move-bookmark-hunyuan-fp8-visual.mp4`
 - full real I2V inference through the API remains a slow GPU validation step
+
+## Tiny Wan Batch Debugging
+
+Use the tiny Wan batch config for low-memory API debugging. The batch endpoint creates normal generation jobs and
+tracks them under one `batch_id`; with the default `--job-workers 1`, those jobs run sequentially to avoid local GPU
+OOM.
+
+Dry-run the checked-in batch payload:
+
+```bash
+source .venv/bin/activate
+python scripts/submit_video_batch.py configs/tiny-wan-batch.yaml --dry-run
+```
+
+Submit it and wait for completion:
+
+```bash
+source .venv/bin/activate
+python scripts/submit_video_batch.py configs/tiny-wan-batch.yaml
+```
+
+Override any item with list indexes:
+
+```bash
+source .venv/bin/activate
+python scripts/submit_video_batch.py configs/tiny-wan-batch.yaml \
+  --set 'requests.0.prompt=A tiny camera circles a glass cube.' \
+  --set requests.1.options.num_frames=5
+```
+
+Direct API shape:
+
+```bash
+curl -X POST http://127.0.0.1:8000/v1/video/generation-batches \
+  -H "Content-Type: application/json" \
+  -d '{
+    "requests": [
+      {
+        "provider": "sglang",
+        "model": "Erland/tiny-wan2.1-t2v-debug",
+        "mode": "text_to_video",
+        "prompt": "A camera glides over a quiet city street at night.",
+        "options": {
+          "height": 64,
+          "width": 64,
+          "num_frames": 5,
+          "timeout_seconds": 300
+        }
+      }
+    ],
+    "metadata": {
+      "purpose": "tiny-wan-batch-debug"
+    }
+  }'
+```
+
+Poll the returned batch id:
+
+```bash
+curl http://127.0.0.1:8000/v1/video/generation-batches/<batch_id> | python -m json.tool
+```

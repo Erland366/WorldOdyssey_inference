@@ -9,11 +9,15 @@ backend_url: http://127.0.0.1:8000
 request:
   provider: sglang
   mode: text_to_video
-  model: lmsys/hunyuanvideo-modelopt-fp8-sglang-transformer
+  # The FP8 transformer is supplied to the SGLang server at launch with
+  # --transformer-path. Requests still use the loaded base model id.
+  model: hunyuanvideo-community/HunyuanVideo
   options:
-    height: 448
-    width: 832
-    num_frames: 61
+    height: 128
+    width: 128
+    num_frames: 5
+    num_inference_steps: 1
+    seed: 1
     timeout_seconds: 600
 
 run:
@@ -21,4 +25,4 @@ run:
   wait: true
   poll_interval_seconds: 5
   wait_timeout_seconds: 600
-  download_dir: artifacts/video-backend/worldodyssey-inputs
+  download_dir: artifacts/video-backend/worldodyssey-inputs-hunyuan-fp8

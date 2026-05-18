@@ -4,10 +4,14 @@ These YAML files drive the local video backend submitters:
 
 - `worldodyssey-move-bookmark-t2v.yaml`: WorldOdyssey task-to-video request.
 - `worldodyssey-move-bookmark-i2v.yaml`: WorldOdyssey image-to-video request using the task's main frame.
+- `worldodyssey-move-bookmark-t2v-hunyuan-fp8-visual.yaml`: single WorldOdyssey `move_bookmark` T2V run using
+  Hunyuan FP8 at supported 540p dimensions for visual inspection.
 - `worldodyssey-inputs-batch-t2v.yaml`: WorldOdyssey parent `inputs/` directory submitted as one T2V batch.
 - `worldodyssey-inputs-batch-t2v-tinywan.yaml`: WorldOdyssey parent `inputs/` batch using the tiny Wan debug model.
+- `worldodyssey-inputs-batch-t2v-hunyuan-fp8.yaml`: WorldOdyssey parent `inputs/` batch using the Hunyuan FP8
+  multipart SGLang server path.
 - `worldodyssey-inputs-batch-t2v-wan-InP.yaml`: WorldOdyssey parent `inputs/` batch in I2V mode with
-  `weizhou03/Wan2.1-Fun-1.3B-InP-Diffusers` and low-memory smoke dimensions.
+  `weizhou03/Wan2.1-Fun-1.3B-InP-Diffusers` and low-memory five-frame smoke dimensions.
 - `tiny-wan-batch.yaml`: provider-neutral batch request using `Erland/tiny-wan2.1-t2v-debug`.
 
 Run one directly:
@@ -17,9 +21,9 @@ source .venv/bin/activate
 python scripts/submit_worldodyssey_task.py --config configs/worldodyssey-move-bookmark-i2v.yaml
 ```
 
-Before submitting, the native SGLang server and the provider-neutral backend must already be running. The backend only
-needs `WORLDODYSSEY_SGLANG_BASE_URL`; it forwards each config's `request.model` to SGLang and lets SGLang handle model
-compatibility.
+Before submitting, the native SGLang server and the provider-neutral backend must already be running. The backend needs
+`WORLDODYSSEY_SGLANG_BASE_URL`; `WORLDODYSSEY_SGLANG_VIDEO_API_FORMAT` defaults to the unified native `multipart`
+server path. The backend forwards each config's `request.model` to SGLang and lets SGLang handle model compatibility.
 
 Override any value from the command line with dotted paths:
 
@@ -125,14 +129,31 @@ python scripts/submit_video_batch.py configs/tiny-wan-batch.yaml \
   --set requests.1.options.num_frames=5
 ```
 
-The local SGLang backend talks to a persistent native SGLang Diffusion server through `/v1/videos`. Config files should
-only carry request-time fields supported by that API: prompt, model, mode, image input, `height`, `width`,
-`num_frames`, optional `duration`, optional `fps`, and timeouts.
+The local SGLang backend talks to a persistent native SGLang Diffusion server through `/v1/videos`. Config files always
+carry the provider-neutral request shape: prompt, model, mode, image input, `height`, `width`, `num_frames`, optional
+`duration`, optional `fps`, and timeouts.
 
-Do not put SGLang launch-time knobs in YAML request options. The local provider rejects per-request
-`num_inference_steps`, `seed`, `guidance_scale`, `num_gpus`, `attention_backend`, `vsa_sparsity`, and
-`provider_options`. Configure workload type, GPU count, VSA, and any server-side sampling flags when starting
-`scripts/serve_sglang_diffusion.sh`.
+The unified multipart local provider forwards `num_inference_steps`, `seed`, `guidance_scale`, `negative_prompt`,
+scalar `provider_options.request_fields`, and structured `provider_options.extra_body`. It rejects launch-time knobs:
+non-default `num_gpus`, `attention_backend`, and `vsa_sparsity`. Configure GPU count, VSA, tensor parallelism, sequence
+parallelism, transformer overrides, and memory offload when starting `scripts/serve_sglang_diffusion.sh`.
+
+For Hunyuan FP8, keep `request.model` as `hunyuanvideo-community/HunyuanVideo`. Pass
+`lmsys/hunyuanvideo-modelopt-fp8-sglang-transformer` to SGLang at server launch with `--transformer-path`.
+
+Use the checked-in visual config when you want an inspectable single output:
+
+```bash
+source .venv/bin/activate
+python scripts/submit_worldodyssey_task.py \
+  --config configs/worldodyssey-move-bookmark-t2v-hunyuan-fp8-visual.yaml
+```
+
+It writes:
+
+```text
+artifacts/video-backend/worldodyssey-move-bookmark-hunyuan-fp8-visual.mp4
+```
 
 When debugging a failed run, the job log should start with:
 

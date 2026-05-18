@@ -96,6 +96,25 @@ On the host with NVIDIA driver `550.127.08` and CUDA `12.4` reported by `nvidia-
 - A local `sgl-kernel` source build against `torch==2.6.0+cu124` needed compiler, CMake policy, CUDA, and NVTX path fixes. Treat that route as a production build attempt, not a quick foreground debug command.
 - Use `scripts/install_sglang_diffusion.sh` and `references/sglang-diffusion.md` as the reproducible local path.
 
+## Hunyuan ModelOpt FP8 Result
+
+For `lmsys/hunyuanvideo-modelopt-fp8-sglang-transformer`, use the focused
+`sglang-hunyuan-fp8-diffusion` skill. The current project path uses one unified `.venv_sglang` runtime for FastWan,
+Hunyuan FP8, I2V, and tiny debug models.
+
+Known result on the same RTX 4090 host:
+
+- `sglang==0.5.5` cannot run the Hunyuan FP8 transformer path; its diffusion runtime lacks the needed ModelOpt FP8 support.
+- `sglang[diffusion]==0.5.10.post1` resolves on CUDA 12 / PyTorch cu128 and avoids the CUDA 13 dependency conflict.
+- `sglang==0.5.11` pulls into the CUDA 13 line and is not viable unless the host CUDA constraint changes.
+- The working FP8 environment used `torch==2.9.1+cu128`, `sglang-kernel==0.4.1`, `flashinfer-python==0.6.7.post3`,
+  `diffusers==0.37.0`, `transformers==5.3.0`, `tokenizers==0.22.1`, `nvidia-modelopt==0.44.0`, and
+  `accelerate==1.13.0`.
+- Stock `sglang==0.5.10.post1` still needs a small diffusion FP8 backport: register SGLang main's `modelopt` FP8
+  diffusion quantizer and handle fused q/k/v per-tensor scale loading.
+- A native SGLang `/v1/videos` smoke request completed with `hunyuanvideo-community/HunyuanVideo` plus the FP8
+  transformer override using `128x128`, `5` frames, and `1` inference step.
+
 ## Decision Rules
 
 - If the base CUDA probe fails, stop and fix PyTorch, CUDA libraries, or the host driver.
@@ -105,16 +124,16 @@ On the host with NVIDIA driver `550.127.08` and CUDA `12.4` reported by `nvidia-
 
 ## Backend API Notes
 
-The provider-neutral backend launches SGLang from `.venv_sglangcuda12` while the server itself runs from `.venv`. Keep
-this separation unless a new compatibility pass proves both stacks can share one environment.
+The provider-neutral backend points at a native SGLang process started from `.venv_sglang`. Keep SGLang out of the main
+`.venv`, but do not split FastWan and Hunyuan FP8 into separate SGLang environments by default.
 
 The server injects these runtime guards when calling SGLang:
 
 ```text
-PATH=<repo>/.venv_sglangcuda12/bin:/usr/local/bin:/usr/bin:/bin
+PATH=<repo>/.venv_sglang/bin:/usr/local/bin:/usr/bin:/bin
 CC=/usr/bin/gcc
 CXX=/usr/bin/g++
-CUDA_HOME=<repo>/.venv_sglangcuda12/lib/python3.12/site-packages/nvidia
+CUDA_HOME=<repo>/.venv_sglang/lib/python3.12/site-packages/nvidia
 ```
 
 For local T2V validation, use `FastVideo/FastWan2.1-T2V-1.3B-Diffusers` with `video_sparse_attn` and
@@ -128,7 +147,7 @@ is required for I2V, use an explicitly supported Wan2.1 I2V VSA model and valida
 After the stack passes the probes, run the optional SGLang backend test:
 
 ```bash
-source .venv_sglangcuda12/bin/activate
+source .venv_sglang/bin/activate
 python -m pytest tests/backends/test_sglang_tiny_wan.py -m slow -s
 ```
 

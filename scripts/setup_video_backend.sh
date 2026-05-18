@@ -30,7 +30,6 @@ cat <<'EOF'
 Video backend setup complete.
 
 Start native SGLang first, for example:
-  WORLDODYSSEY_SGLANG_WORKLOAD_TYPE=t2v \
   WORLDODYSSEY_SGLANG_NUM_GPUS=1 \
   bash scripts/serve_sglang_diffusion.sh FastVideo/FastWan2.1-T2V-1.3B-Diffusers \
     --attention-backend video_sparse_attn \

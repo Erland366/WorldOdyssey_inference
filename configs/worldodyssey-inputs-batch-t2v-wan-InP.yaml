@@ -14,7 +14,9 @@ request:
   options:
     height: 256
     width: 448
-    num_frames: 3
+    # Wan requires (num_frames - 1) to be divisible by 4; 5 is the smallest
+    # smoke-test value that stays a real multi-frame video.
+    num_frames: 81
     timeout_seconds: 600
 
 run:

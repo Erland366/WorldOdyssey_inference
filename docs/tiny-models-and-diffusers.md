@@ -152,7 +152,6 @@ The backend path still requires a persistent native SGLang server. Start SGLang 
 the batch:
 
 ```bash
-WORLDODYSSEY_SGLANG_WORKLOAD_TYPE=t2v \
 WORLDODYSSEY_SGLANG_NUM_GPUS=1 \
 bash scripts/serve_sglang_diffusion.sh Erland/tiny-wan2.1-t2v-debug
 ```
@@ -194,7 +193,9 @@ The primary matrix covers:
 
 Each case can run on one or two GPUs. Diffusers uses a single CUDA device for one-GPU runs and
 `device_map="balanced"` for two-GPU runs. Benchmark workers set
-`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` unless the caller already provides an allocator config.
+`SGLANG_DISABLE_FLASHINFER_ROPE=1` and `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` unless the caller already
+provides those env vars. The FlashInfer guard keeps Wan InP on SGLang's Triton RoPE fallback when the uv runtime has no
+`nvcc` for FlashInfer's JIT cache build.
 
 Run a one-step fit check for the FastVideo 5B model on one GPU:
 
@@ -353,5 +354,5 @@ FastVideo worker subprocesses import FastVideo independently and `fastvideo==0.1
 
 The failed CUDA-12.4 SGLang experiment is documented in `references/troubleshooting.md`: forcing `sglang==0.5.5` onto
 `torch==2.6.0+cu124` fails before the CLI starts because `sgl_kernel` cannot load `common_ops` due to a torch C++ ABI
-symbol mismatch. The working SGLang path remains the isolated `.venv_sglangcuda12` stack described in
+symbol mismatch. The working SGLang path is the isolated `.venv_sglang` stack described in
 `references/sglang-diffusion.md`.

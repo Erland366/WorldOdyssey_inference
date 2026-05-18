@@ -8,6 +8,7 @@ wheels/
 
 # Virtual environments
 .venv
+.venv*
 .venv*/
 
 # Local secrets
@@ -16,6 +17,7 @@ wheels/
 # Generated inference/debug artifacts
 artifacts/
 benchmark_results/
+inputs/uploads/
 outputs/
 output.mp4
 compiled_resources/

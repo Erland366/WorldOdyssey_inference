@@ -104,9 +104,9 @@ instead of the CLI values. This was observed both for the tiny Wan debug model a
 `weizhou03/Wan2.1-Fun-1.3B-InP-Diffusers`.
 
 Fix: Do not use `sglang generate` as the backend path. The current video backend talks only to the native SGLang
-Diffusion server through `/v1/videos`. Request-time shape fields are mapped to SGLang's native payload, while
-one-shot-only fields such as `num_inference_steps` and `seed` are rejected instead of being silently routed through
-another runner.
+Diffusion server through `/v1/videos`. Request-time shape fields are mapped to SGLang's native payload. The pinned
+FastWan/VSA JSON API format rejects `num_inference_steps` and `seed`; the Hunyuan FP8 multipart API format forwards
+them because that native SGLang server accepts them as request fields.
 
 ## SGLang Diffusion `serve` CLI Rejects `--workload-type`
 
@@ -309,7 +309,10 @@ python scripts/submit_worldodyssey_task.py --config configs/worldodyssey-move-bo
 Only override I2V shape fields intentionally. The expected default I2V request uses `480x832`, `81` frames, and no VSA
 settings for `FastVideo/FastWan2.2-TI2V-5B-Diffusers`.
 
-### Working `.venv_sglangcuda12` FastWan VSA Validation
+### Legacy `.venv_sglangcuda12` FastWan VSA Validation
+
+This is a historical validation note. The current default SGLang runtime is the unified `.venv_sglang` native
+multipart server path.
 
 The validated foreground command generated `artifacts/backend-videos/sglang-fastwan-vsa/fastwan-vsa-smoke.mp4` on
 May 15, 2026:

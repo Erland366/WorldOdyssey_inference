@@ -26,13 +26,15 @@ from worldodyssey_inference.video_backend.providers import (
     DEFAULT_SGLANG_MODEL,
     LocalSGLangProvider,
     ProviderRunResult,
+    SGLANG_VIDEO_API_FORMAT_JSON,
+    SGLANG_VIDEO_API_FORMAT_MULTIPART,
     UnsupportedRequestError,
 )
 from worldodyssey_inference.video_backend.storage import JobPaths, JobStore
 
 
 def make_sglang_runtime(root: Path) -> Path:
-    venv = root / ".venv_sglangcuda12"
+    venv = root / ".venv_sglang"
     (venv / "bin").mkdir(parents=True)
     (venv / "bin" / "sglang").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
     cuda_lib = venv / "lib" / "python3.12" / "site-packages" / "nvidia" / "cuda_runtime" / "lib"
@@ -62,12 +64,14 @@ def make_sglang_provider(
     *,
     server_model: str = DEFAULT_SGLANG_MODEL,
     server_url: str | None = None,
+    server_api_format: str | None = None,
 ) -> LocalSGLangProvider:
     return LocalSGLangProvider(
         repo_root=root,
         venv_path=make_sglang_runtime(root),
         server_url=server_url,
         server_model=server_model,
+        server_api_format=server_api_format,
     )
 
 
@@ -115,8 +119,8 @@ def test_sglang_provider_does_not_require_backend_model_hint(tmp_path: Path) -> 
     provider.validate_request(request)
 
 
-def test_sglang_native_server_rejects_one_shot_only_request_options(tmp_path: Path) -> None:
-    provider = make_sglang_provider(tmp_path)
+def test_sglang_legacy_json_server_rejects_sampling_request_options(tmp_path: Path) -> None:
+    provider = make_sglang_provider(tmp_path, server_api_format=SGLANG_VIDEO_API_FORMAT_JSON)
     request = make_request(
         options={
             "height": 448,
@@ -172,6 +176,8 @@ def test_sglang_capability_does_not_publish_model_allowlist(tmp_path: Path) -> N
     assert provider.capability.models == []
     assert provider.capability.setup["model_policy"] == "request_model_forwarded_to_native_sglang"
     assert provider.capability.setup["server_api"] == "/v1/videos"
+    assert provider.capability.setup["server_api_format"] == "multipart"
+    assert provider.capability.supports_seed is True
     assert provider.capability.setup["configured_server_model_hint"] == DEFAULT_SGLANG_MODEL
     assert provider.capability.setup["default_text_to_video_model"] == DEFAULT_SGLANG_MODEL
     assert provider.capability.setup["default_image_to_video_model"] == DEFAULT_SGLANG_I2V_MODEL
@@ -254,6 +260,86 @@ def test_sglang_rejects_provider_options_for_native_server(tmp_path: Path) -> No
         provider.validate_request(request)
 
 
+def test_sglang_json_api_format_rejects_negative_prompt(tmp_path: Path) -> None:
+    provider = make_sglang_provider(tmp_path, server_api_format=SGLANG_VIDEO_API_FORMAT_JSON)
+    request = make_request(negative_prompt="low quality")
+
+    with pytest.raises(UnsupportedRequestError, match="negative_prompt"):
+        provider.validate_request(request)
+
+
+def test_sglang_multipart_api_accepts_native_request_fields(tmp_path: Path) -> None:
+    provider = make_sglang_provider(
+        tmp_path,
+        server_api_format=SGLANG_VIDEO_API_FORMAT_MULTIPART,
+    )
+    request = make_request(
+        negative_prompt="low quality",
+        options={
+            "height": 128,
+            "width": 128,
+            "num_frames": 5,
+            "num_inference_steps": 1,
+            "seed": 123,
+            "guidance_scale": 4.5,
+            "provider_options": {
+                "request_fields": {"enable_teacache": True},
+                "extra_body": {"denoise": "fast"},
+            },
+        },
+    )
+
+    provider.validate_request(request)
+    payload = provider.build_server_payload(request)
+
+    assert provider.capability.supports_seed is True
+    assert provider.capability.setup["server_api_format"] == SGLANG_VIDEO_API_FORMAT_MULTIPART
+    assert payload["negative_prompt"] == "low quality"
+    assert payload["num_inference_steps"] == 1
+    assert payload["seed"] == 123
+    assert payload["guidance_scale"] == 4.5
+    assert payload["enable_teacache"] is True
+    assert json.loads(payload["extra_body"]) == {"denoise": "fast"}
+
+
+def test_sglang_multipart_rejects_launch_time_options(tmp_path: Path) -> None:
+    provider = make_sglang_provider(
+        tmp_path,
+        server_api_format=SGLANG_VIDEO_API_FORMAT_MULTIPART,
+    )
+    request = make_request(
+        options={
+            "height": 448,
+            "width": 832,
+            "num_frames": 61,
+            "num_gpus": 2,
+            "attention_backend": "video_sparse_attn",
+            "vsa_sparsity": 0.5,
+        },
+    )
+
+    with pytest.raises(UnsupportedRequestError, match="options.attention_backend"):
+        provider.validate_request(request)
+
+
+def test_sglang_multipart_rejects_managed_provider_option_fields(tmp_path: Path) -> None:
+    provider = make_sglang_provider(
+        tmp_path,
+        server_api_format=SGLANG_VIDEO_API_FORMAT_MULTIPART,
+    )
+    request = make_request(
+        options={
+            "height": 128,
+            "width": 128,
+            "num_frames": 5,
+            "provider_options": {"request_fields": {"seed": 123}},
+        },
+    )
+
+    with pytest.raises(UnsupportedRequestError, match="conflicts with a managed SGLang field"):
+        provider.validate_request(request)
+
+
 def test_sglang_rejects_vsa_sparsity_as_per_request_native_server_option(tmp_path: Path) -> None:
     image_path = tmp_path / "input.png"
     image_path.write_bytes(b"fake image")
@@ -318,8 +404,16 @@ def start_fake_sglang_server():
                 self.send_error(404)
                 return
             content_length = int(self.headers["Content-Length"])
-            payload = json.loads(self.rfile.read(content_length).decode("utf-8"))
-            requests.append(payload)
+            body = self.rfile.read(content_length)
+            content_type = self.headers.get("Content-Type", "")
+            if content_type.startswith("application/json"):
+                payload = json.loads(body.decode("utf-8"))
+                requests.append(payload)
+            elif content_type.startswith("multipart/form-data"):
+                requests.append({"content_type": content_type, "body": body})
+            else:
+                self.send_error(415)
+                return
             self._send_json({"id": "video_1", "object": "video", "status": "queued"})
 
         def do_GET(self) -> None:
@@ -361,6 +455,7 @@ def test_sglang_provider_runs_through_native_server_api(tmp_path: Path) -> None:
             venv_path=make_sglang_runtime(tmp_path),
             server_url=server_url,
             server_model=DEFAULT_SGLANG_MODEL,
+            server_api_format=SGLANG_VIDEO_API_FORMAT_JSON,
         )
         paths = JobStore(tmp_path / "jobs").paths_for("job")
         now = utc_now_iso()
@@ -391,6 +486,108 @@ def test_sglang_provider_runs_through_native_server_api(tmp_path: Path) -> None:
         ]
         assert "POST /v1/videos" in paths.log_path.read_text(encoding="utf-8")
         assert result.metrics["sglang_video_id"] == "video_1"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_sglang_provider_runs_multipart_native_server_api(tmp_path: Path) -> None:
+    server, requests = start_fake_sglang_server()
+    try:
+        server_url = f"http://127.0.0.1:{server.server_port}"
+        provider = LocalSGLangProvider(
+            repo_root=tmp_path,
+            venv_path=make_sglang_runtime(tmp_path),
+            server_url=server_url,
+            server_model=DEFAULT_SGLANG_MODEL,
+            server_api_format=SGLANG_VIDEO_API_FORMAT_MULTIPART,
+        )
+        paths = JobStore(tmp_path / "jobs").paths_for("job")
+        now = utc_now_iso()
+        request = make_request(
+            negative_prompt="low quality",
+            options={
+                "height": 128,
+                "width": 128,
+                "num_frames": 5,
+                "timeout_seconds": 5,
+                "num_inference_steps": 1,
+                "seed": 123,
+                "guidance_scale": 4.5,
+                "provider_options": {"request_fields": {"enable_teacache": True}},
+            },
+        )
+        record = VideoJobRecord(
+            id="job",
+            status=JobStatus.RUNNING,
+            provider="sglang",
+            model=request.model,
+            mode=request.mode,
+            created_at=now,
+            updated_at=now,
+            request=request,
+        )
+
+        result = provider.run(record, paths)
+
+        assert result.output_path == paths.output_path
+        assert requests[0]["content_type"].startswith("multipart/form-data")
+        body = requests[0]["body"]
+        assert b'name="prompt"\r\n\r\nA calm ocean wave at sunrise' in body
+        assert b'name="negative_prompt"\r\n\r\nlow quality' in body
+        assert b'name="num_inference_steps"\r\n\r\n1' in body
+        assert b'name="seed"\r\n\r\n123' in body
+        assert b'name="guidance_scale"\r\n\r\n4.5' in body
+        assert b'name="enable_teacache"\r\n\r\ntrue' in body
+        assert "POST /v1/videos (multipart)" in paths.log_path.read_text(encoding="utf-8")
+        assert result.metrics["sglang_video_api_format"] == "multipart"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_sglang_provider_uploads_i2v_image_for_multipart_api(tmp_path: Path) -> None:
+    server, requests = start_fake_sglang_server()
+    try:
+        image_path = tmp_path / "input.png"
+        image_path.write_bytes(b"fake image")
+        server_url = f"http://127.0.0.1:{server.server_port}"
+        provider = LocalSGLangProvider(
+            repo_root=tmp_path,
+            venv_path=make_sglang_runtime(tmp_path),
+            server_url=server_url,
+            server_model=DEFAULT_SGLANG_I2V_MODEL,
+            server_api_format=SGLANG_VIDEO_API_FORMAT_MULTIPART,
+        )
+        paths = JobStore(tmp_path / "jobs").paths_for("job")
+        now = utc_now_iso()
+        request = VideoGenerationRequest.model_validate(
+            {
+                "provider": "sglang",
+                "model": DEFAULT_SGLANG_I2V_MODEL,
+                "mode": "image_to_video",
+                "prompt": "animate this frame",
+                "image_path": str(image_path),
+                "options": {"height": 128, "width": 128, "num_frames": 5, "timeout_seconds": 5},
+            }
+        )
+        record = VideoJobRecord(
+            id="job",
+            status=JobStatus.RUNNING,
+            provider="sglang",
+            model=request.model,
+            mode=request.mode,
+            created_at=now,
+            updated_at=now,
+            request=request,
+        )
+
+        provider.run(record, paths)
+
+        body = requests[0]["body"]
+        assert b'name="input_reference"; filename="input.png"' in body
+        assert b"fake image" in body
+        assert str(image_path).encode("utf-8") not in body
     finally:
         server.shutdown()
         server.server_close()

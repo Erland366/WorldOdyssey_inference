@@ -1,0 +1,36 @@
+task: compiled_resources/worldodyssey/WorldOdyssey/inputs/move_bookmark
+backend_url: http://127.0.0.1:8000
+
+# Visual-inspection FP8 run.
+# Start SGLang with:
+#   WORLDODYSSEY_SGLANG_OFFLOAD_PRESET=memory \
+#   WORLDODYSSEY_SGLANG_LOG_LEVEL=debug \
+#   WORLDODYSSEY_SGLANG_NUM_GPUS=2 \
+#   WORLDODYSSEY_SGLANG_TP_SIZE=1 \
+#   WORLDODYSSEY_SGLANG_SP_DEGREE=2 \
+#   bash scripts/serve_sglang_diffusion.sh hunyuanvideo-community/HunyuanVideo \
+#     --transformer-path lmsys/hunyuanvideo-modelopt-fp8-sglang-transformer
+#
+# HunyuanVideo supports 960x544 as a 540p preset. This is larger than the
+# 128x128 smoke config but still much safer than the default 1280x720/125-frame
+# generation on 24 GB GPUs.
+
+request:
+  provider: sglang
+  mode: text_to_video
+  # The FP8 transformer is supplied to SGLang at launch with --transformer-path.
+  # Requests still use the loaded base model id.
+  model: hunyuanvideo-community/HunyuanVideo
+  options:
+    height: 544
+    width: 960
+    num_frames: 81
+    seed: 11
+    timeout_seconds: 1800
+
+run:
+  dry_run: false
+  wait: true
+  poll_interval_seconds: 5
+  wait_timeout_seconds: 1800
+  download_path: artifacts/video-backend/worldodyssey-move-bookmark-hunyuan-fp8-visual.mp4

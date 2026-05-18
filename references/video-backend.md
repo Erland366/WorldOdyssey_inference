@@ -9,6 +9,7 @@ The local SGLang adapter is native-server-only:
 - start the FastAPI backend with `WORLDODYSSEY_SGLANG_BASE_URL`
 - submit jobs through `/v1/video/generations` or `/v1/video/generation-batches`
 - the backend posts to SGLang's native `/v1/videos` API and downloads `/v1/videos/<id>/content`
+- `WORLDODYSSEY_SGLANG_VIDEO_API_FORMAT` defaults to the unified native `multipart` request shape
 
 There is no one-shot generation fallback, no `sglang generate` backend path, and no Python single-request runner.
 
@@ -23,7 +24,7 @@ bash scripts/setup_video_backend.sh
 This command:
 
 - syncs the main `.venv` dependencies for the FastAPI server with `uv sync --inexact`
-- installs or updates the isolated `.venv_sglangcuda12` SGLang Diffusion environment
+- installs or updates the isolated `.venv_sglang` SGLang Diffusion environment
 - verifies the server packages are importable
 
 It does not start SGLang or the FastAPI backend.
@@ -33,11 +34,31 @@ It does not start SGLang or the FastAPI backend.
 Start native SGLang first:
 
 ```bash
-WORLDODYSSEY_SGLANG_WORKLOAD_TYPE=t2v \
 WORLDODYSSEY_SGLANG_NUM_GPUS=1 \
 bash scripts/serve_sglang_diffusion.sh FastVideo/FastWan2.1-T2V-1.3B-Diffusers \
   --attention-backend video_sparse_attn \
   --VSA-sparsity 0.5
+```
+
+Start Hunyuan FP8 with:
+
+```bash
+WORLDODYSSEY_SGLANG_OFFLOAD_PRESET=memory \
+WORLDODYSSEY_SGLANG_LOG_LEVEL=debug \
+WORLDODYSSEY_SGLANG_NUM_GPUS=2 \
+WORLDODYSSEY_SGLANG_TP_SIZE=1 \
+WORLDODYSSEY_SGLANG_SP_DEGREE=2 \
+bash scripts/serve_sglang_diffusion.sh hunyuanvideo-community/HunyuanVideo \
+  --transformer-path lmsys/hunyuanvideo-modelopt-fp8-sglang-transformer
+```
+
+For low-VRAM launches, add the explicit memory offload preset:
+
+```bash
+WORLDODYSSEY_SGLANG_OFFLOAD_PRESET=memory \
+WORLDODYSSEY_SGLANG_LOG_LEVEL=debug \
+WORLDODYSSEY_SGLANG_NUM_GPUS=1 \
+bash scripts/serve_sglang_diffusion.sh weizhou03/Wan2.1-Fun-1.3B-InP-Diffusers
 ```
 
 Then start the backend in another shell:
@@ -71,6 +92,7 @@ The `sglang` capability exposes:
 - `models`: empty list, because the backend does not maintain a model allowlist
 - `setup.server_script`: `scripts/serve_sglang_diffusion.sh`
 - `setup.server_api`: `/v1/videos`
+- `setup.server_api_format`: `json` or `multipart`
 - `setup.configured_server_model_hint`: optional value from `WORLDODYSSEY_SGLANG_MODEL`
 
 Remote providers are visible but disabled until adapters are implemented:
@@ -214,20 +236,15 @@ Canonical request fields:
 }
 ```
 
-The shared schema intentionally contains fields needed by future providers. For local `provider=sglang`, native
-`/v1/videos` only accepts a smaller request surface. The provider rejects:
+The shared schema intentionally contains fields needed by future providers. For local `provider=sglang`, the unified
+native multipart path forwards `negative_prompt`, `options.num_inference_steps`, `options.seed`,
+`options.guidance_scale`, scalar `options.provider_options.request_fields`, and structured
+`options.provider_options.extra_body`. It rejects launch-time settings in generation requests: non-default
+`options.num_gpus`, `options.attention_backend`, and `options.vsa_sparsity`.
 
-- `options.num_inference_steps`
-- `options.seed`
-- `options.guidance_scale`
-- `options.num_gpus` when not the default `1`
-- `options.attention_backend`
-- `options.vsa_sparsity`
-- `options.provider_options`
-
-Configure model id, workload type, GPU count, VSA, and server-side sampling behavior on `scripts/serve_sglang_diffusion.sh`.
-If native SGLang does not expose a setting on the diffusion server entrypoint, the backend does not invent an alternate
-execution path.
+Configure model id, GPU count, VSA, tensor parallelism, sequence parallelism, transformer overrides, and memory offload on
+`scripts/serve_sglang_diffusion.sh`. If native SGLang does not expose a setting on the diffusion server entrypoint, the
+backend does not invent an alternate execution path.
 
 ## Local SGLang Behavior
 

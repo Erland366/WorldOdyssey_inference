@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -37,6 +38,29 @@ DEFAULT_SGLANG_FPS = 16
 DEFAULT_SGLANG_SERVER_URL = "http://127.0.0.1:30000"
 SGLANG_SERVER_URL_ENV = "WORLDODYSSEY_SGLANG_BASE_URL"
 SGLANG_SERVER_MODEL_ENV = "WORLDODYSSEY_SGLANG_MODEL"
+SGLANG_SERVER_VIDEO_API_FORMAT_ENV = "WORLDODYSSEY_SGLANG_VIDEO_API_FORMAT"
+SGLANG_VIDEO_API_FORMAT_JSON = "json"
+SGLANG_VIDEO_API_FORMAT_MULTIPART = "multipart"
+DEFAULT_SGLANG_VIDEO_API_FORMAT = SGLANG_VIDEO_API_FORMAT_MULTIPART
+SGLANG_VIDEO_API_FORMATS = frozenset(
+    {SGLANG_VIDEO_API_FORMAT_JSON, SGLANG_VIDEO_API_FORMAT_MULTIPART}
+)
+SGLANG_MULTIPART_PROVIDER_OPTION_KEYS = frozenset({"request_fields", "extra_body"})
+SGLANG_MANAGED_VIDEO_FIELDS = frozenset(
+    {
+        "prompt",
+        "model",
+        "size",
+        "fps",
+        "num_frames",
+        "seconds",
+        "input_reference",
+        "negative_prompt",
+        "num_inference_steps",
+        "seed",
+        "guidance_scale",
+    }
+)
 
 
 class ProviderError(RuntimeError):
@@ -92,12 +116,18 @@ class LocalSGLangProvider:
         venv_path: Path | None = None,
         server_url: str | None = None,
         server_model: str | None = None,
+        server_api_format: str | None = None,
     ) -> None:
         self.repo_root = repo_root
-        self.venv_path = venv_path or repo_root / ".venv_sglangcuda12"
+        self.venv_path = venv_path or repo_root / ".venv_sglang"
         self.cuda_home = self.venv_path / "lib" / "python3.12" / "site-packages" / "nvidia"
         self.server_url = (server_url or os.environ.get(SGLANG_SERVER_URL_ENV) or DEFAULT_SGLANG_SERVER_URL).rstrip("/")
         self.server_model = server_model or os.environ.get(SGLANG_SERVER_MODEL_ENV)
+        self.server_api_format = self._normalize_server_api_format(
+            server_api_format
+            or os.environ.get(SGLANG_SERVER_VIDEO_API_FORMAT_ENV)
+            or DEFAULT_SGLANG_VIDEO_API_FORMAT
+        )
         self.capability = ProviderCapability(
             id="sglang",
             label="Local SGLang Diffusion",
@@ -106,7 +136,7 @@ class LocalSGLangProvider:
             models=[],
             modes=[VideoMode.TEXT_TO_VIDEO, VideoMode.IMAGE_TO_VIDEO],
             supports_audio=False,
-            supports_seed=False,
+            supports_seed=self.server_api_format == SGLANG_VIDEO_API_FORMAT_MULTIPART,
             supports_custom_resolution=True,
             supports_reference_images=False,
             resolutions=["custom"],
@@ -117,8 +147,10 @@ class LocalSGLangProvider:
                 "server_script": "scripts/serve_sglang_diffusion.sh",
                 "server_url": self.server_url,
                 "server_api": "/v1/videos",
+                "server_api_format": self.server_api_format,
                 "server_url_env": SGLANG_SERVER_URL_ENV,
                 "server_model_env": SGLANG_SERVER_MODEL_ENV,
+                "server_api_format_env": SGLANG_SERVER_VIDEO_API_FORMAT_ENV,
                 "configured_server_model_hint": self.server_model,
                 "model_policy": "request_model_forwarded_to_native_sglang",
                 "default_text_to_video_model": DEFAULT_SGLANG_MODEL,
@@ -182,31 +214,36 @@ class LocalSGLangProvider:
         if request.options.generate_audio:
             raise UnsupportedRequestError("Local SGLang I2V does not generate audio.")
 
-    @staticmethod
-    def _validate_native_server_request_options(request: VideoGenerationRequest) -> None:
+    def _validate_native_server_request_options(self, request: VideoGenerationRequest) -> None:
         options = request.options
         unsupported_fields = []
-        if options.num_inference_steps is not None:
-            unsupported_fields.append("options.num_inference_steps")
-        if options.seed is not None:
-            unsupported_fields.append("options.seed")
-        if options.guidance_scale is not None:
-            unsupported_fields.append("options.guidance_scale")
         if options.attention_backend is not None:
             unsupported_fields.append("options.attention_backend")
         if options.vsa_sparsity is not None:
             unsupported_fields.append("options.vsa_sparsity")
         if options.num_gpus != 1:
             unsupported_fields.append("options.num_gpus")
-        if options.provider_options:
-            unsupported_fields.append("options.provider_options")
+        if self.server_api_format == SGLANG_VIDEO_API_FORMAT_JSON:
+            if request.negative_prompt is not None:
+                unsupported_fields.append("negative_prompt")
+            if options.num_inference_steps is not None:
+                unsupported_fields.append("options.num_inference_steps")
+            if options.seed is not None:
+                unsupported_fields.append("options.seed")
+            if options.guidance_scale is not None:
+                unsupported_fields.append("options.guidance_scale")
+            if options.provider_options:
+                unsupported_fields.append("options.provider_options")
         if unsupported_fields:
             joined = ", ".join(unsupported_fields)
             raise UnsupportedRequestError(
                 "Native SGLang serve does not accept these as per-request fields: "
-                f"{joined}. Configure model, GPUs, denoising, VSA, and offload settings when starting "
-                "scripts/serve_sglang_diffusion.sh."
+                f"{joined}. Configure model, GPUs, VSA, and offload settings when starting "
+                "scripts/serve_sglang_diffusion.sh. For newer SGLang servers that accept multipart "
+                f"request fields, set {SGLANG_SERVER_VIDEO_API_FORMAT_ENV}=multipart."
             )
+        if self.server_api_format == SGLANG_VIDEO_API_FORMAT_MULTIPART:
+            self._validate_multipart_provider_options(options.provider_options)
 
     def build_server_payload(
         self,
@@ -233,6 +270,16 @@ class LocalSGLangProvider:
             payload["seconds"] = options.duration
         if image_path is not None:
             payload["input_reference"] = str(image_path)
+        if request.negative_prompt is not None:
+            payload["negative_prompt"] = request.negative_prompt
+        if options.num_inference_steps is not None:
+            payload["num_inference_steps"] = options.num_inference_steps
+        if options.seed is not None:
+            payload["seed"] = options.seed
+        if options.guidance_scale is not None:
+            payload["guidance_scale"] = options.guidance_scale
+        if self.server_api_format == SGLANG_VIDEO_API_FORMAT_MULTIPART:
+            self._apply_multipart_provider_options(payload, options.provider_options)
         return payload
 
     def run(self, record: VideoJobRecord, paths: JobPaths) -> ProviderRunResult:
@@ -242,15 +289,22 @@ class LocalSGLangProvider:
         paths.log_path.parent.mkdir(parents=True, exist_ok=True)
         image_path = self._stage_i2v_image(request, paths) if request.mode == VideoMode.IMAGE_TO_VIDEO else None
         payload = self.build_server_payload(request, image_path=image_path)
+        files: dict[str, Path] = {}
+        if self.server_api_format == SGLANG_VIDEO_API_FORMAT_MULTIPART and image_path is not None:
+            payload.pop("input_reference", None)
+            files["input_reference"] = image_path
 
         started = time.perf_counter()
         with paths.log_path.open("w", encoding="utf-8") as log_handle:
             log_handle.write(f"SGLang server: {self.server_url}\n")
-            log_handle.write("POST /v1/videos\n")
+            log_handle.write(f"POST /v1/videos ({self.server_api_format})\n")
             log_handle.write(json.dumps(payload, indent=2, sort_keys=True) + "\n\n")
+            if files:
+                log_handle.write("Multipart files:\n")
+                log_handle.write(json.dumps({field: str(path) for field, path in files.items()}, indent=2) + "\n\n")
             log_handle.flush()
 
-            created = self._post_json("/v1/videos", payload, timeout=request.options.timeout_seconds)
+            created = self._post_video_create(payload, files=files, timeout=request.options.timeout_seconds)
             log_handle.write("Create response:\n")
             log_handle.write(json.dumps(created, indent=2, sort_keys=True) + "\n\n")
             log_handle.flush()
@@ -273,6 +327,7 @@ class LocalSGLangProvider:
                 "elapsed_seconds": round(elapsed, 4),
                 "sglang_video_id": video_id,
                 "sglang_server_url": self.server_url,
+                "sglang_video_api_format": self.server_api_format,
             },
         )
 
@@ -304,12 +359,64 @@ class LocalSGLangProvider:
                 )
             time.sleep(2.0)
 
+    def _post_video_create(
+        self,
+        payload: dict[str, Any],
+        *,
+        files: dict[str, Path],
+        timeout: int,
+    ) -> dict[str, Any]:
+        if self.server_api_format == SGLANG_VIDEO_API_FORMAT_MULTIPART:
+            return self._post_multipart("/v1/videos", payload, files=files, timeout=timeout)
+        return self._post_json("/v1/videos", payload, timeout=timeout)
+
     def _post_json(self, path: str, payload: dict[str, Any], *, timeout: int) -> dict[str, Any]:
         body = json.dumps(payload).encode("utf-8")
         request = Request(
             self._url(path),
             data=body,
             headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        return self._open_json(request, timeout=timeout)
+
+    def _post_multipart(
+        self,
+        path: str,
+        fields: dict[str, Any],
+        *,
+        files: dict[str, Path],
+        timeout: int,
+    ) -> dict[str, Any]:
+        boundary = f"----WorldOdyssey{uuid.uuid4().hex}"
+        body = bytearray()
+        for name, value in fields.items():
+            encoded_value = self._encode_multipart_field(name, value)
+            body.extend(f"--{boundary}\r\n".encode("utf-8"))
+            body.extend(f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode("utf-8"))
+            body.extend(encoded_value.encode("utf-8"))
+            body.extend(b"\r\n")
+
+        for name, file_path in files.items():
+            body.extend(f"--{boundary}\r\n".encode("utf-8"))
+            body.extend(
+                (
+                    f'Content-Disposition: form-data; name="{name}"; '
+                    f'filename="{file_path.name}"\r\n'
+                ).encode("utf-8")
+            )
+            body.extend(b"Content-Type: application/octet-stream\r\n\r\n")
+            body.extend(file_path.read_bytes())
+            body.extend(b"\r\n")
+
+        body.extend(f"--{boundary}--\r\n".encode("utf-8"))
+        request = Request(
+            self._url(path),
+            data=bytes(body),
+            headers={
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+                "Content-Length": str(len(body)),
+            },
             method="POST",
         )
         return self._open_json(request, timeout=timeout)
@@ -359,6 +466,84 @@ class LocalSGLangProvider:
         if not isinstance(value, str) or not value:
             raise ProviderRuntimeError(f"SGLang response is missing string field {field!r}.")
         return value
+
+    @staticmethod
+    def _normalize_server_api_format(value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in SGLANG_VIDEO_API_FORMATS:
+            allowed = ", ".join(sorted(SGLANG_VIDEO_API_FORMATS))
+            raise UnsupportedRequestError(
+                f"Unsupported {SGLANG_SERVER_VIDEO_API_FORMAT_ENV}={value!r}. Expected one of: {allowed}."
+            )
+        return normalized
+
+    @staticmethod
+    def _validate_multipart_provider_options(provider_options: dict[str, Any]) -> None:
+        if not provider_options:
+            return
+
+        unknown_keys = sorted(set(provider_options) - SGLANG_MULTIPART_PROVIDER_OPTION_KEYS)
+        if unknown_keys:
+            joined = ", ".join(f"options.provider_options.{key}" for key in unknown_keys)
+            raise UnsupportedRequestError(
+                "SGLang multipart provider_options supports only request_fields and extra_body. "
+                f"Unsupported: {joined}."
+            )
+
+        request_fields = provider_options.get("request_fields")
+        if request_fields is not None:
+            if not isinstance(request_fields, dict):
+                raise UnsupportedRequestError("options.provider_options.request_fields must be an object.")
+            for field_name, field_value in request_fields.items():
+                if not isinstance(field_name, str) or not field_name:
+                    raise UnsupportedRequestError(
+                        "options.provider_options.request_fields keys must be non-empty strings."
+                    )
+                if field_name in SGLANG_MANAGED_VIDEO_FIELDS:
+                    raise UnsupportedRequestError(
+                        f"options.provider_options.request_fields.{field_name} conflicts with a managed SGLang field."
+                    )
+                LocalSGLangProvider._validate_multipart_scalar(
+                    f"options.provider_options.request_fields.{field_name}",
+                    field_value,
+                )
+
+        extra_body = provider_options.get("extra_body")
+        if extra_body is not None and not isinstance(extra_body, str):
+            json.dumps(extra_body)
+
+    @staticmethod
+    def _validate_multipart_scalar(field_name: str, field_value: Any) -> None:
+        if isinstance(field_value, bool):
+            return
+        if isinstance(field_value, str) and field_value:
+            return
+        if isinstance(field_value, int | float):
+            return
+        raise UnsupportedRequestError(
+            f"{field_name} must be a string, number, or boolean multipart field. "
+            "Use options.provider_options.extra_body for structured JSON."
+        )
+
+    @staticmethod
+    def _apply_multipart_provider_options(payload: dict[str, Any], provider_options: dict[str, Any]) -> None:
+        if not provider_options:
+            return
+        request_fields = provider_options.get("request_fields") or {}
+        payload.update(request_fields)
+        if "extra_body" in provider_options:
+            extra_body = provider_options["extra_body"]
+            payload["extra_body"] = extra_body if isinstance(extra_body, str) else json.dumps(extra_body, sort_keys=True)
+
+    @staticmethod
+    def _encode_multipart_field(name: str, value: Any) -> str:
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        if isinstance(value, str):
+            return value
+        if isinstance(value, int | float):
+            return str(value)
+        raise UnsupportedRequestError(f"Cannot encode SGLang multipart field {name!r} with value type {type(value).__name__}.")
 
     @staticmethod
     def _validate_output(path: Path) -> None:

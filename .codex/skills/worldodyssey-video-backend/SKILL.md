@@ -30,12 +30,40 @@ implemented.
 Start native SGLang first:
 
 ```bash
-WORLDODYSSEY_SGLANG_WORKLOAD_TYPE=t2v \
 WORLDODYSSEY_SGLANG_NUM_GPUS=1 \
 bash scripts/serve_sglang_diffusion.sh FastVideo/FastWan2.1-T2V-1.3B-Diffusers \
   --attention-backend video_sparse_attn \
   --VSA-sparsity 0.5
 ```
+
+For Hunyuan FP8, start native SGLang with the multipart API format:
+
+```bash
+WORLDODYSSEY_SGLANG_OFFLOAD_PRESET=memory \
+WORLDODYSSEY_SGLANG_LOG_LEVEL=debug \
+WORLDODYSSEY_SGLANG_NUM_GPUS=2 \
+WORLDODYSSEY_SGLANG_TP_SIZE=1 \
+WORLDODYSSEY_SGLANG_SP_DEGREE=2 \
+bash scripts/serve_sglang_diffusion.sh hunyuanvideo-community/HunyuanVideo \
+  --transformer-path lmsys/hunyuanvideo-modelopt-fp8-sglang-transformer
+```
+
+If a video model OOMs at startup or during inference, restart the native SGLang server with the explicit memory offload
+preset:
+
+```bash
+WORLDODYSSEY_SGLANG_OFFLOAD_PRESET=memory \
+WORLDODYSSEY_SGLANG_LOG_LEVEL=debug \
+WORLDODYSSEY_SGLANG_NUM_GPUS=1 \
+bash scripts/serve_sglang_diffusion.sh weizhou03/Wan2.1-Fun-1.3B-InP-Diffusers
+```
+
+The preset expands to layerwise DiT offload, encoder/VAE CPU offload, pinned CPU memory, VAE tiling, VAE slicing, and
+smaller VAE decode tiles. It defaults `SGLANG_ENABLE_DETERMINISTIC_INFERENCE=1`,
+`USE_TRITON_W8A8_FP8_KERNEL=1`, `SGLANG_DISABLE_FLASHINFER_ROPE=1`, and
+`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` unless those env vars are already set.
+`SGLANG_DISABLE_FLASHINFER_ROPE=1` keeps Wan InP on SGLang's Triton RoPE fallback when FlashInfer would otherwise JIT
+compile with an absent `nvcc`. Keep offload as a SGLang launch-time setting; do not put it in request YAML.
 
 Then start the provider-neutral backend from the main environment:
 
@@ -128,10 +156,10 @@ I2V default:
 If image input is rejected, confirm the request mode is `image_to_video` and exactly one of `image_path`, `image_url`,
 or `image_base64` is set.
 
-If a request includes SGLang launch-time fields such as `request.options.num_inference_steps`,
-`request.options.seed`, `request.options.attention_backend`, `request.options.vsa_sparsity`, non-default
-`request.options.num_gpus`, or `request.options.provider_options`, the local provider rejects it. Configure those
-values on `scripts/serve_sglang_diffusion.sh`.
+The local provider forwards request-time fields such as `request.options.num_inference_steps`, `request.options.seed`,
+and `request.options.guidance_scale` through the unified multipart SGLang API. It rejects launch-time fields in
+requests: `request.options.attention_backend`, `request.options.vsa_sparsity`, and non-default
+`request.options.num_gpus`. Configure those values, plus memory offload, on `scripts/serve_sglang_diffusion.sh`.
 
 Local generation should go through the native SGLang Diffusion server. If a job log does not start with
 `SGLang server:` and `POST /v1/videos`, the backend process is stale.
@@ -153,7 +181,7 @@ Run fast tests after backend or config changes:
 
 ```bash
 source .venv/bin/activate
-python -m pytest tests/test_video_backend.py tests/test_worldodyssey_adapter.py tests/test_wan_benchmark.py -q
+python -m pytest tests/test_video_backend.py tests/test_sglang_hunyuan_fp8_patch.py tests/test_worldodyssey_adapter.py tests/test_wan_benchmark.py -q
 python -m compileall worldodyssey_inference scripts tests
 git diff --check
 ```

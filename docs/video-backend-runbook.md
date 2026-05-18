@@ -32,6 +32,13 @@ The validated T2V VSA launch settings are:
 --VSA-sparsity 0.5
 ```
 
+The validated FP8 T2V pair is:
+
+```text
+base model:       hunyuanvideo-community/HunyuanVideo
+FP8 transformer:  lmsys/hunyuanvideo-modelopt-fp8-sglang-transformer
+```
+
 ## 1. Setup
 
 Run from the repository root:
@@ -44,7 +51,7 @@ bash scripts/setup_video_backend.sh
 What this does:
 
 - installs main server dependencies into `.venv`
-- installs SGLang Diffusion into `.venv_sglangcuda12`
+- installs the unified SGLang Diffusion runtime into `.venv_sglang`
 - preserves existing local ML packages by using `uv sync --inexact`
 - verifies key backend packages after installation
 
@@ -55,7 +62,6 @@ Do not use conda for this setup unless explicitly approved. Do not use `uv run`.
 Start SGLang in the foreground first so startup errors surface immediately:
 
 ```bash
-WORLDODYSSEY_SGLANG_WORKLOAD_TYPE=t2v \
 WORLDODYSSEY_SGLANG_NUM_GPUS=1 \
 bash scripts/serve_sglang_diffusion.sh FastVideo/FastWan2.1-T2V-1.3B-Diffusers \
   --attention-backend video_sparse_attn \
@@ -66,14 +72,51 @@ For I2V:
 
 ```bash
 WORLDODYSSEY_SGLANG_WORKLOAD_TYPE=i2v \
-WORLDODYSSEY_SGLANG_NUM_GPUS=2 \
+WORLDODYSSEY_SGLANG_OFFLOAD_PRESET=memory \
+WORLDODYSSEY_SGLANG_LOG_LEVEL=debug \
+WORLDODYSSEY_SGLANG_NUM_GPUS=1 \
 bash scripts/serve_sglang_diffusion.sh weizhou03/Wan2.1-Fun-1.3B-InP-Diffusers
 ```
 
-The launcher prints the backend URL and an optional model hint for that SGLang process:
+For Hunyuan FP8:
+
+```bash
+WORLDODYSSEY_SGLANG_OFFLOAD_PRESET=memory \
+WORLDODYSSEY_SGLANG_LOG_LEVEL=debug \
+WORLDODYSSEY_SGLANG_NUM_GPUS=2 \
+WORLDODYSSEY_SGLANG_TP_SIZE=1 \
+WORLDODYSSEY_SGLANG_SP_DEGREE=2 \
+bash scripts/serve_sglang_diffusion.sh hunyuanvideo-community/HunyuanVideo \
+  --transformer-path lmsys/hunyuanvideo-modelopt-fp8-sglang-transformer
+```
+
+If the model OOMs during startup or inference, restart SGLang with the explicit memory offload preset:
+
+```bash
+WORLDODYSSEY_SGLANG_OFFLOAD_PRESET=memory \
+WORLDODYSSEY_SGLANG_LOG_LEVEL=debug \
+WORLDODYSSEY_SGLANG_NUM_GPUS=1 \
+bash scripts/serve_sglang_diffusion.sh weizhou03/Wan2.1-Fun-1.3B-InP-Diffusers
+```
+
+The preset is native-server-only and expands to `--dit-layerwise-offload`, `--dit-cpu-offload false`,
+`--dit-offload-prefetch-size 0`, `--text-encoder-cpu-offload`, `--image-encoder-cpu-offload`, `--vae-cpu-offload`,
+`--pin-cpu-memory`, `--vae-tiling`, `--vae-slicing`, and smaller VAE decode tiles:
+`--vae-config.tile-sample-min-height 128`, `--vae-config.tile-sample-min-width 128`,
+`--vae-config.tile-sample-stride-height 96`, `--vae-config.tile-sample-stride-width 96`,
+`--vae-config.tile-sample-min-num-frames 8`, and `--vae-config.tile-sample-stride-num-frames 4`. It also defaults
+`SGLANG_ENABLE_DETERMINISTIC_INFERENCE=1`, `USE_TRITON_W8A8_FP8_KERNEL=1`,
+`SGLANG_DISABLE_FLASHINFER_ROPE=1`, and `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` unless those env vars are
+already set. `SGLANG_DISABLE_FLASHINFER_ROPE=1` avoids FlashInfer's RoPE JIT path for Wan InP when the uv environment
+does not provide `nvcc`; SGLang then uses its Triton RoPE fallback. Keep this as a launch-time setting; request YAML
+should not carry offload knobs. Pass a later `--dit-offload-prefetch-size`, such as `0.1`, after the model id only
+after the lowest-memory launch succeeds.
+
+The launcher prints the backend URL, API format, and an optional model hint for that SGLang process:
 
 ```bash
 export WORLDODYSSEY_SGLANG_BASE_URL=http://127.0.0.1:30000
+export WORLDODYSSEY_SGLANG_VIDEO_API_FORMAT=multipart
 export WORLDODYSSEY_SGLANG_MODEL=<loaded-model-id>
 ```
 
@@ -91,7 +134,7 @@ tmux new-session -s "tmux-$(( $(tmux list-sessions -F '#S' 2>/dev/null | sed -n 
 Then send the SGLang command to the tmux session:
 
 ```bash
-tmux send-keys -t <session> 'WORLDODYSSEY_SGLANG_WORKLOAD_TYPE=t2v WORLDODYSSEY_SGLANG_NUM_GPUS=1 bash scripts/serve_sglang_diffusion.sh FastVideo/FastWan2.1-T2V-1.3B-Diffusers --attention-backend video_sparse_attn --VSA-sparsity 0.5' Enter
+tmux send-keys -t <session> 'WORLDODYSSEY_SGLANG_NUM_GPUS=1 bash scripts/serve_sglang_diffusion.sh FastVideo/FastWan2.1-T2V-1.3B-Diffusers --attention-backend video_sparse_attn --VSA-sparsity 0.5' Enter
 ```
 
 Check the pane:
@@ -112,6 +155,9 @@ export WORLDODYSSEY_SGLANG_BASE_URL=http://127.0.0.1:30000
 source .venv/bin/activate
 python scripts/serve_video_backend.py --host 127.0.0.1 --port 8000
 ```
+
+`WORLDODYSSEY_SGLANG_VIDEO_API_FORMAT` defaults to `multipart`, matching the unified native server launcher. Set it to
+`json` only when intentionally using the legacy SGLang 0.5.5 wrapper stack.
 
 `WORLDODYSSEY_SGLANG_MODEL` is optional provider metadata:
 
@@ -145,6 +191,7 @@ Current behavior:
 - `sglang` accepts `text_to_video` and `image_to_video`.
 - `sglang.setup.server_script` is `scripts/serve_sglang_diffusion.sh`.
 - `sglang.setup.server_api` is `/v1/videos`.
+- `sglang.setup.server_api_format` is `json` or `multipart`.
 - `fal`, `google_veo`, and `xai_grok` are visible but disabled until adapters and API-key handling are implemented.
 
 ## 4. Submit T2V
@@ -186,6 +233,32 @@ Download:
 curl -L -o output.mp4 http://127.0.0.1:8000/v1/video/generations/<job_id>/video
 ```
 
+## 4A. Submit Hunyuan FP8 T2V
+
+The FastAPI request remains JSON. The local provider converts it to multipart for native SGLang.
+
+```bash
+curl -X POST http://127.0.0.1:8000/v1/video/generations \
+  -H "Content-Type: application/json" \
+  -d '{
+    "provider": "sglang",
+    "model": "hunyuanvideo-community/HunyuanVideo",
+    "mode": "text_to_video",
+    "prompt": "A tiny red cube rotating on a plain gray background",
+    "options": {
+      "height": 128,
+      "width": 128,
+      "num_frames": 5,
+      "num_inference_steps": 1,
+      "seed": 1,
+      "timeout_seconds": 600
+    }
+  }'
+```
+
+The FP8 transformer repository is not the request model id. It is provided to SGLang at launch with
+`--transformer-path lmsys/hunyuanvideo-modelopt-fp8-sglang-transformer`.
+
 Server-side outputs are stored under:
 
 ```text
@@ -196,8 +269,7 @@ artifacts/video-backend/videos/<job_id>/output.mp4
 
 ## 5. Submit I2V
 
-Start SGLang with `WORLDODYSSEY_SGLANG_WORKLOAD_TYPE=i2v` and export the loaded model id into the backend environment
-before using this endpoint.
+Start SGLang with the target I2V model before using this endpoint.
 
 The easy I2V path needs an image input and prompt. If `mode` and `model` are omitted, the API infers
 `mode=image_to_video` and the default local I2V model from the image field. For a custom model, set `model` explicitly:
@@ -228,22 +300,21 @@ Supported local image inputs:
 
 Use exactly one image input per local SGLang I2V request.
 
-## 6. Request Fields SGLang Rejects
+## 6. Request Fields
 
-Native SGLang `/v1/videos` does not expose the old one-shot runner's knobs as per-request fields. The local provider
-rejects these fields for `provider=sglang`:
+The unified native multipart server forwards these request-time fields to SGLang:
 
-- `options.num_inference_steps`
 - `options.seed`
 - `options.guidance_scale`
-- `options.num_gpus` when not the default `1`
-- `options.attention_backend`
-- `options.vsa_sparsity`
-- `options.provider_options`
+- `negative_prompt`
+- `options.num_inference_steps`
+- scalar `options.provider_options.request_fields`
+- structured `options.provider_options.extra_body` as a JSON string form field
 
-Configure model id, workload type, GPU count, VSA, and server-side sampling behavior on
-`scripts/serve_sglang_diffusion.sh`. If SGLang does not expose a setting on its native diffusion server, this backend
-does not invent a fallback path.
+The local provider rejects launch-time settings in generation requests: non-default `options.num_gpus`,
+`options.attention_backend`, and `options.vsa_sparsity`. Configure model id, GPU count, VSA, tensor parallelism,
+sequence parallelism, transformer overrides, and memory offload on `scripts/serve_sglang_diffusion.sh`. If SGLang does
+not expose a setting on its native diffusion server, this backend does not invent a fallback path.
 
 ## 7. Submit a Tiny Wan Batch
 
@@ -374,6 +445,28 @@ source .venv/bin/activate
 python scripts/submit_worldodyssey_task.py --config configs/worldodyssey-inputs-batch-t2v-wan-InP.yaml
 ```
 
+Run the Hunyuan FP8 parent-input smoke config:
+
+```bash
+source .venv/bin/activate
+python scripts/submit_worldodyssey_task.py --config configs/worldodyssey-inputs-batch-t2v-hunyuan-fp8.yaml
+```
+
+Run a larger supported 540p FP8 config for visual inspection of one task. Start the Hunyuan FP8 server with
+`WORLDODYSSEY_SGLANG_OFFLOAD_PRESET=memory` first so the low-memory FP8 and VAE tile defaults are active:
+
+```bash
+source .venv/bin/activate
+python scripts/submit_worldodyssey_task.py \
+  --config configs/worldodyssey-move-bookmark-t2v-hunyuan-fp8-visual.yaml
+```
+
+That config writes:
+
+```text
+artifacts/video-backend/worldodyssey-move-bookmark-hunyuan-fp8-visual.mp4
+```
+
 For parent-directory batches, use `run.download_dir` or `--download-dir`. Single-task `run.download_path` is rejected
 for batch submissions because there is no single output filename.
 
@@ -399,12 +492,21 @@ Current automated validation covers:
 - provider payload mapping to native `/v1/videos`
 - provider create, poll, and download flow against a fake SGLang server
 - strict rejection of one-shot-only SGLang request fields
+- multipart FP8 request forwarding for seed, step count, negative prompt, provider fields, and I2V file upload
 - WorldOdyssey prompt construction and parent-input batch expansion
 - YAML dry-run and `--set dotted.path=value` override behavior
 - FastWan T2V VSA server startup with `WORLDODYSSEY_SGLANG_NUM_GPUS=2` until Uvicorn served
   `http://127.0.0.1:30000`
 - the FastWan T2V curl in this runbook was validated end to end through the API on 2026-05-17; it completed in
   17.0533 seconds and wrote `artifacts/video-backend/videos/vid_20260517T185746Z_3497cb08/output.mp4`
+- native Hunyuan FP8 SGLang multipart smoke was validated on 2026-05-18 and wrote
+  `artifacts/video-backend/75a30c04-59f1-4255-ba8c-6ac9aee91d1b.mp4`
+- Hunyuan FP8 was validated through the provider-neutral FastAPI app on 2026-05-18; job
+  `vid_20260518T065703Z_04fe6059` wrote
+  `artifacts/video-backend-api-smoke/videos/vid_20260518T065703Z_04fe6059/output.mp4`
+- the larger WorldOdyssey Hunyuan FP8 visual config was validated end to end on 2026-05-18 with the `memory` preset;
+  job `vid_20260518T113402Z_9c852dfc` wrote
+  `artifacts/video-backend/worldodyssey-move-bookmark-hunyuan-fp8-visual.mp4`
 
 Full real I2V inference through the API is a slow GPU validation step and was not rerun in this change.
 
@@ -419,10 +521,10 @@ bash scripts/setup_video_backend.sh
 The SGLang launcher sets these runtime guards:
 
 ```text
-PATH=<repo>/.venv_sglangcuda12/bin:/usr/local/bin:/usr/bin:/bin
+PATH=<repo>/.venv_sglang/bin:/usr/local/bin:/usr/bin:/bin
 CC=/usr/bin/gcc
 CXX=/usr/bin/g++
-CUDA_HOME=<repo>/.venv_sglangcuda12/lib/python3.12/site-packages/nvidia
+CUDA_HOME=<repo>/.venv_sglang/lib/python3.12/site-packages/nvidia
 ```
 
 If a job fails, inspect the job record and log:
