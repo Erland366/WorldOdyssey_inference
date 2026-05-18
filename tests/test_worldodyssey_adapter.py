@@ -15,6 +15,7 @@ from worldodyssey_inference.video_backend.providers import (
     DEFAULT_SGLANG_MODEL,
 )
 from worldodyssey_inference.video_backend.worldodyssey import (
+    DEFAULT_WORLDODYSSEY_TASK_DIR,
     build_worldodyssey_generation_request,
     build_worldodyssey_prompt,
     load_worldodyssey_task,
@@ -73,6 +74,15 @@ def make_task_dir(
         encoding="utf-8",
     )
     return task_dir
+
+
+def test_worldodyssey_default_task_dir_uses_submodule() -> None:
+    expected_suffix = Path("submodule/worldodyssey/inputs/move_bookmark")
+
+    assert (
+        DEFAULT_WORLDODYSSEY_TASK_DIR.parts[-len(expected_suffix.parts) :]
+        == expected_suffix.parts
+    )
 
 
 def test_worldodyssey_prompt_uses_task_text_only(tmp_path: Path) -> None:

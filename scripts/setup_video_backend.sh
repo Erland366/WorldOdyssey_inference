@@ -9,6 +9,8 @@ if ! command -v uv >/dev/null 2>&1; then
     exit 1
 fi
 
+git submodule update --init --recursive submodule/worldodyssey
+
 # Keep already-installed local ML packages such as FastVideo intact. This setup
 # only needs to ensure the server dependencies from the lockfile are present.
 uv sync --inexact

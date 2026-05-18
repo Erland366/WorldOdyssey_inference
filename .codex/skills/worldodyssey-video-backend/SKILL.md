@@ -76,6 +76,13 @@ python scripts/serve_video_backend.py --host 127.0.0.1 --port 8000
 `WORLDODYSSEY_SGLANG_MODEL` is optional metadata. The backend forwards each request's `model` to native SGLang and
 does not reject requests based on a backend-side model hint.
 
+WorldOdyssey task inputs live in the `submodule/worldodyssey` git submodule. `bash scripts/setup_video_backend.sh`
+initializes it; for input-only work, run:
+
+```bash
+git submodule update --init --recursive submodule/worldodyssey
+```
+
 For repeated WorldOdyssey inference, prefer YAML configs:
 
 ```bash
@@ -121,7 +128,7 @@ scans direct child folders with `task.json` and submits a batch:
 
 ```bash
 source .venv/bin/activate
-python scripts/submit_worldodyssey_task.py compiled_resources/worldodyssey/WorldOdyssey/inputs --dry-run
+python scripts/submit_worldodyssey_task.py submodule/worldodyssey/inputs --dry-run
 ```
 
 Use `--download-dir`, not `--download-path`, for parent-directory batch outputs.

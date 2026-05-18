@@ -1,4 +1,4 @@
-task: compiled_resources/worldodyssey/WorldOdyssey/inputs/move_bookmark
+task: submodule/worldodyssey/inputs/move_bookmark
 backend_url: http://127.0.0.1:8000
 
 # Optional prompt prefix. By default the submitted prompt is only the WorldOdyssey `task` field.

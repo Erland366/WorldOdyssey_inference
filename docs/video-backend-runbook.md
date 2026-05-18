@@ -50,12 +50,19 @@ bash scripts/setup_video_backend.sh
 
 What this does:
 
+- initializes the WorldOdyssey input repository submodule under `submodule/worldodyssey`
 - installs main server dependencies into `.venv`
 - installs the unified SGLang Diffusion runtime into `.venv_sglang`
 - preserves existing local ML packages by using `uv sync --inexact`
 - verifies key backend packages after installation
 
 Do not use conda for this setup unless explicitly approved. Do not use `uv run`.
+
+If you skip setup and only need the WorldOdyssey task inputs, initialize the submodule directly:
+
+```bash
+git submodule update --init --recursive submodule/worldodyssey
+```
 
 ## 2. Start Native SGLang
 
@@ -282,7 +289,7 @@ curl -X POST http://127.0.0.1:8000/v1/video/generations \
     "mode": "image_to_video",
     "model": "weizhou03/Wan2.1-Fun-1.3B-InP-Diffusers",
     "prompt": "Generate a first-person video of a hand moving the bookmark into the yellow book.",
-    "image_path": "compiled_resources/worldodyssey/WorldOdyssey/inputs/move_bookmark/frames/main.png",
+    "image_path": "submodule/worldodyssey/inputs/move_bookmark/frames/main.png",
     "options": {
       "height": 256,
       "width": 448,
@@ -394,16 +401,23 @@ curl -L -o output.mp4 http://127.0.0.1:8000/v1/video/generations/<job_id>/video
 
 ## 8. Run WorldOdyssey Inputs
 
+WorldOdyssey inputs are tracked as a git submodule at `submodule/worldodyssey`. The setup script initializes it; if the
+task paths below are missing, run:
+
+```bash
+git submodule update --init --recursive submodule/worldodyssey
+```
+
 The imported task lives at:
 
 ```text
-compiled_resources/worldodyssey/WorldOdyssey/inputs/move_bookmark
+submodule/worldodyssey/inputs/move_bookmark
 ```
 
 The parent input root is:
 
 ```text
-compiled_resources/worldodyssey/WorldOdyssey/inputs
+submodule/worldodyssey/inputs
 ```
 
 The adapter reads `task.json`, uses only the `task` field as the generation prompt, and keeps the topology graph plus

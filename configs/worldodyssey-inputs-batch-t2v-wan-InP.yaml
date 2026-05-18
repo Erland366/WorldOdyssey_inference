@@ -1,4 +1,4 @@
-task: compiled_resources/worldodyssey/WorldOdyssey/inputs
+task: submodule/worldodyssey/inputs
 backend_url: http://127.0.0.1:8000
 
 adapter:

@@ -67,12 +67,19 @@ bash scripts/setup_video_backend.sh
 
 This command:
 
+- initializes the WorldOdyssey input repository submodule under `submodule/worldodyssey`
 - installs main backend dependencies into `.venv` with `uv sync --inexact`
 - installs the unified SGLang Diffusion runtime into `.venv_sglang`
 - keeps SGLang isolated from the main Diffusers/FastVideo environment
 - verifies the main server packages after installation
 
 Do not use conda for this setup unless explicitly approved. Do not use `uv run`.
+
+If you intentionally skip setup and only need the WorldOdyssey inputs, initialize the submodule directly:
+
+```bash
+git submodule update --init --recursive submodule/worldodyssey
+```
 
 ## Start SGLang
 
@@ -268,16 +275,23 @@ launcher as `--transformer-path`; request `model` stays as `hunyuanvideo-communi
 
 ## Run WorldOdyssey
 
+WorldOdyssey inputs are tracked as a git submodule at `submodule/worldodyssey`. The setup script initializes it; if the
+paths below are missing, run:
+
+```bash
+git submodule update --init --recursive submodule/worldodyssey
+```
+
 The imported example task lives at:
 
 ```text
-compiled_resources/worldodyssey/WorldOdyssey/inputs/move_bookmark
+submodule/worldodyssey/inputs/move_bookmark
 ```
 
 You can also pass the parent inputs directory:
 
 ```text
-compiled_resources/worldodyssey/WorldOdyssey/inputs
+submodule/worldodyssey/inputs
 ```
 
 When the path contains child task folders, the submitter expands it into a `/v1/video/generation-batches` request.
@@ -350,7 +364,7 @@ Dry-run all available task folders under the imported `inputs/` root:
 ```bash
 source .venv/bin/activate
 python scripts/submit_worldodyssey_task.py \
-  compiled_resources/worldodyssey/WorldOdyssey/inputs \
+  submodule/worldodyssey/inputs \
   --dry-run
 ```
 

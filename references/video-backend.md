@@ -25,6 +25,7 @@ This command:
 
 - syncs the main `.venv` dependencies for the FastAPI server with `uv sync --inexact`
 - installs or updates the isolated `.venv_sglang` SGLang Diffusion environment
+- initializes the WorldOdyssey input repository submodule under `submodule/worldodyssey`
 - verifies the server packages are importable
 
 It does not start SGLang or the FastAPI backend.
@@ -132,7 +133,7 @@ curl -X POST http://127.0.0.1:8000/v1/video/generations \
     "mode": "image_to_video",
     "model": "weizhou03/Wan2.1-Fun-1.3B-InP-Diffusers",
     "prompt": "Generate a first-person video of a hand moving the bookmark into the yellow book.",
-    "image_path": "compiled_resources/worldodyssey/WorldOdyssey/inputs/move_bookmark/frames/main.png",
+    "image_path": "submodule/worldodyssey/inputs/move_bookmark/frames/main.png",
     "options": {
       "height": 256,
       "width": 448,
@@ -266,16 +267,23 @@ the model loaded by the native SGLang server.
 `POST /v1/video/generations` payload. If the provided path is a parent directory containing child task folders, it
 adapts those children into `POST /v1/video/generation-batches`.
 
+The WorldOdyssey input repository is tracked as a git submodule at `submodule/worldodyssey`. Run
+`scripts/setup_video_backend.sh` before using the checked-in configs, or initialize only the inputs with:
+
+```bash
+git submodule update --init --recursive submodule/worldodyssey
+```
+
 The default task path is:
 
 ```text
-compiled_resources/worldodyssey/WorldOdyssey/inputs/move_bookmark
+submodule/worldodyssey/inputs/move_bookmark
 ```
 
 The parent input path is:
 
 ```text
-compiled_resources/worldodyssey/WorldOdyssey/inputs
+submodule/worldodyssey/inputs
 ```
 
 The generated prompt is only the WorldOdyssey `task` field by default. Use `adapter.prompt_prefix` or `--prompt-prefix`
