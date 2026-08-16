@@ -10,6 +10,7 @@ The primary local path is:
 - native SGLang server launcher: `scripts/serve_sglang_diffusion.sh`
 - optional launcher memory offload preset: `WORLDODYSSEY_SGLANG_OFFLOAD_PRESET=memory`
 - validated T2V model: `FastVideo/FastWan2.1-T2V-1.3B-Diffusers`
+- validated Cosmos model: `nvidia/Cosmos3-Nano`
 - validated T2V attention backend: `video_sparse_attn` with `vsa_sparsity=0.5`
 - validated FP8 model pair: `hunyuanvideo-community/HunyuanVideo` with
   `lmsys/hunyuanvideo-modelopt-fp8-sglang-transformer`
@@ -17,8 +18,9 @@ The primary local path is:
 - tiny T2V debug model: `Erland/tiny-wan2.1-t2v-debug`
 
 There is no local one-shot generation fallback. The backend requires an already-running native SGLang Diffusion server
-and calls SGLang's `/v1/videos` API. The normal server path uses one native multipart SGLang server for FastWan,
-Hunyuan FP8, I2V, and tiny debug runs.
+and calls SGLang's `/v1/videos` API. The normal server path uses the same native multipart API and pinned runtime for
+FastWan, Cosmos 3, Hunyuan FP8, I2V, and tiny debug runs. One SGLang process loads one checkpoint; restart that process
+to switch model families while the WorldOdyssey API stays unchanged.
 
 The server exposes single-job and batch APIs:
 
@@ -46,7 +48,7 @@ GET  /v1/video/generation-batches/<batch_id>
 Use the repository `.venv` directly. Do not use `uv run`.
 
 ```bash
-cd /home/coder/Python_project/WorldOdyssey_inference
+cd /path/to/WorldOdyssey_inference
 source .venv/bin/activate
 ```
 
@@ -59,19 +61,41 @@ uv pip install <package>
 
 ## Setup
 
-Run setup once from the repository root:
+Run the one-command installer from the repository root:
 
 ```bash
-bash scripts/setup_video_backend.sh
+./install.sh
 ```
 
 This command:
 
 - initializes the WorldOdyssey input repository submodule under `submodule/worldodyssey`
-- installs main backend dependencies into `.venv` with `uv sync --inexact`
-- installs the unified SGLang Diffusion runtime into `.venv_sglang`
-- keeps SGLang isolated from the main Diffusers/FastVideo environment
+- installs the exact locked backend dependencies into `.venv` with `uv sync`
+- installs one unified SGLang Diffusion runtime for FastWan and Cosmos 3 into `.venv_sglang`
+- checks out the exact Cosmos-capable SGLang source revision recorded in `runtime-versions.env`
+- keeps the GPU runtime isolated only from the lightweight backend `.venv`
 - verifies the main server packages after installation
+
+For a lightweight development install without the GPU runtime or submodule, use:
+
+```bash
+./install.sh --main-only
+```
+
+FastWan and Cosmos 3 are supported by default through the provider-neutral SGLang backend. The redundant direct
+FastVideo and direct Cosmos Diffusers runtimes are deprecated.
+
+To omit the shared GPU runtime on a specialized machine, use:
+
+```bash
+./install.sh --skip-sglang
+```
+
+`scripts/install_fastvideo.sh` remains only for historical direct-FastVideo benchmarks. It is not part of the normal
+installation and `.venv_fastvideo` may be removed locally when those benchmarks are no longer needed.
+
+Run `./install.sh --help` for the remaining selective-install options. The legacy
+`bash scripts/setup_video_backend.sh` command remains available as a compatibility wrapper.
 
 Do not use conda for this setup unless explicitly approved. Do not use `uv run`.
 
@@ -80,6 +104,30 @@ If you intentionally skip setup and only need the WorldOdyssey inputs, initializ
 ```bash
 git submodule update --init --recursive submodule/worldodyssey
 ```
+
+## Run Cosmos 3
+
+Start the native server with the single-GPU `nvidia/Cosmos3-Nano` checkpoint. Guardrails require gated Hugging Face
+weights; this local example disables them explicitly:
+
+```bash
+SGLANG_DISABLE_COSMOS3_GUARDRAILS=1 \
+bash scripts/serve_sglang_diffusion.sh nvidia/Cosmos3-Nano
+```
+
+Keep the normal WorldOdyssey backend running in another shell, then submit through its unified endpoint:
+
+```bash
+bash scripts/run_cosmos3.sh
+```
+
+For a reduced local smoke request:
+
+```bash
+bash scripts/run_cosmos3.sh --no-guardrails --num-frames 5 --height 192 --width 320 --steps 1
+```
+
+See [Cosmos 3 setup](docs/cosmos3.md) for version pins and runtime overrides.
 
 ## Start SGLang
 
@@ -475,15 +523,16 @@ source .venv_sglang/bin/activate
 export PATH="$PWD/.venv_sglang/bin:/usr/local/bin:/usr/bin:/bin"
 export CC=/usr/bin/gcc
 export CXX=/usr/bin/g++
-export CUDA_HOME="$PWD/.venv_sglang/lib/python3.12/site-packages/nvidia"
+export CUDA_HOME=/usr/local/cuda
+export PYTHONPATH="$PWD/.deps/sglang/python"
 sglang serve --help
 ```
 
 Use `sglang serve --help` as the installation smoke test for the diffusion server path. Job logs created by this
 backend should start with `SGLang server:` and `POST /v1/videos`.
 
-The unified SGLang stack uses `sglang-kernel==0.4.1` with CUDA 12.8 Torch wheels and should still avoid CUDA 13 runtime
-packages. See `references/sglang-diffusion.md` for the full installation and validation notes.
+The unified stack uses the exact SGLang source and CUDA-12.9 kernel revision in `runtime-versions.env` with CUDA-12.8
+Torch wheels, and rejects CUDA 13 runtime packages. See `references/sglang-diffusion.md` for validation notes.
 
 ## Validated Status
 

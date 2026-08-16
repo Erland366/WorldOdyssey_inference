@@ -36,6 +36,16 @@ bash scripts/serve_sglang_diffusion.sh FastVideo/FastWan2.1-T2V-1.3B-Diffusers \
   --VSA-sparsity 0.5
 ```
 
+Cosmos 3 uses the same native server and provider-neutral API. Start its checkpoint with:
+
+```bash
+SGLANG_DISABLE_COSMOS3_GUARDRAILS=1 \
+bash scripts/serve_sglang_diffusion.sh nvidia/Cosmos3-Nano
+```
+
+One native process loads one checkpoint. Restart SGLang to switch between FastWan and Cosmos; keep the FastAPI
+backend and request schema unchanged. Submit the Cosmos helper with `bash scripts/run_cosmos3.sh`.
+
 For Hunyuan FP8, start native SGLang with the multipart API format:
 
 ```bash
@@ -76,7 +86,7 @@ python scripts/serve_video_backend.py --host 127.0.0.1 --port 8000
 `WORLDODYSSEY_SGLANG_MODEL` is optional metadata. The backend forwards each request's `model` to native SGLang and
 does not reject requests based on a backend-side model hint.
 
-WorldOdyssey task inputs live in the `submodule/worldodyssey` git submodule. `bash scripts/setup_video_backend.sh`
+WorldOdyssey task inputs live in the `submodule/worldodyssey` git submodule. `./install.sh`
 initializes it; for input-only work, run:
 
 ```bash

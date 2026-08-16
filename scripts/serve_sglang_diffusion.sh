@@ -3,11 +3,35 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
+# shellcheck source=../runtime-versions.env
+source "$ROOT_DIR/runtime-versions.env"
 
 MODEL_PATH="${1:-${WORLDODYSSEY_SGLANG_MODEL:-FastVideo/FastWan2.1-T2V-1.3B-Diffusers}}"
 if [[ $# -gt 0 ]]; then
   shift
 fi
+
+# SGLang moved the standalone --VSA-sparsity flag into the structured
+# --attention-backend-config option. Keep the repository's established command
+# compatible while always invoking the pinned source with its native shape.
+EXTRA_ARGS=()
+while (($#)); do
+  case "$1" in
+    --VSA-sparsity)
+      if [[ $# -lt 2 ]]; then
+        echo "--VSA-sparsity requires a numeric value." >&2
+        exit 2
+      fi
+      EXTRA_ARGS+=(--attention-backend-config "{\"VSA_sparsity\":$2}")
+      shift 2
+      ;;
+    *)
+      EXTRA_ARGS+=("$1")
+      shift
+      ;;
+  esac
+done
+set -- "${EXTRA_ARGS[@]}"
 
 HOST="${WORLDODYSSEY_SGLANG_HOST:-127.0.0.1}"
 PORT="${WORLDODYSSEY_SGLANG_PORT:-30000}"
@@ -16,6 +40,8 @@ WORKLOAD_TYPE="${WORLDODYSSEY_SGLANG_WORKLOAD_TYPE:-t2v}"
 LOG_LEVEL="${WORLDODYSSEY_SGLANG_LOG_LEVEL:-info}"
 ENTRYPOINT="${WORLDODYSSEY_SGLANG_ENTRYPOINT:-native}"
 VENV_PATH="${WORLDODYSSEY_SGLANG_VENV:-$ROOT_DIR/.venv_sglang}"
+SGLANG_SOURCE_PATH="${WORLDODYSSEY_SGLANG_SOURCE:-$ROOT_DIR/.deps/sglang}"
+SGLANG_SOURCE_REV="${WORLDODYSSEY_SGLANG_SOURCE_REV_OVERRIDE:-$WORLDODYSSEY_SGLANG_SOURCE_REV}"
 VIDEO_API_FORMAT="${WORLDODYSSEY_SGLANG_VIDEO_API_FORMAT:-multipart}"
 BACKEND="${WORLDODYSSEY_SGLANG_BACKEND:-sglang}"
 TP_SIZE="${WORLDODYSSEY_SGLANG_TP_SIZE:-1}"
@@ -98,30 +124,38 @@ if [[ ! -x "$VENV_PATH/bin/sglang" ]]; then
   echo "SGLang runtime not found at $VENV_PATH/bin/sglang. Run scripts/install_sglang_diffusion.sh first." >&2
   exit 1
 fi
+if [[ ! -f "$SGLANG_SOURCE_PATH/python/sglang/__init__.py" ]]; then
+  echo "Pinned SGLang source not found at $SGLANG_SOURCE_PATH. Run scripts/install_sglang_diffusion.sh first." >&2
+  exit 1
+fi
+INSTALLED_SOURCE_REV="$(git -C "$SGLANG_SOURCE_PATH" rev-parse HEAD 2>/dev/null || true)"
+if [[ "$INSTALLED_SOURCE_REV" != "$SGLANG_SOURCE_REV" ]]; then
+  echo "Pinned SGLang source mismatch: expected $SGLANG_SOURCE_REV, got ${INSTALLED_SOURCE_REV:-missing}." >&2
+  echo "Run scripts/install_sglang_diffusion.sh to repair it." >&2
+  exit 1
+fi
 
 # shellcheck source=/dev/null
 source "$VENV_PATH/bin/activate"
 
-CUDA_HOME_PATH="$(
-  python - <<'PY'
-from pathlib import Path
-import site
+CUDA_HOME_PATH="${SGLANG_DIFFUSION_CUDA_HOME:-/usr/local/cuda}"
+if [[ ! -x "$CUDA_HOME_PATH/bin/nvcc" || ! -e "$CUDA_HOME_PATH/lib64/libcudart.so.12" ]]; then
+  echo "A complete CUDA 12 toolkit is required at $CUDA_HOME_PATH (missing nvcc or libcudart)." >&2
+  echo "Set SGLANG_DIFFUSION_CUDA_HOME to a compatible toolkit root." >&2
+  exit 1
+fi
+if ! "$CUDA_HOME_PATH/bin/nvcc" --version | grep -q 'release 12\.'; then
+  echo "Cosmos/FastWan require a CUDA 12 nvcc; found:" >&2
+  "$CUDA_HOME_PATH/bin/nvcc" --version >&2
+  exit 1
+fi
 
-for site_dir in site.getsitepackages():
-    candidate = Path(site_dir) / "nvidia"
-    if (candidate / "cuda_runtime" / "lib" / "libcudart.so.12").exists():
-        print(candidate)
-        break
-else:
-    raise SystemExit("Could not locate the active venv NVIDIA CUDA runtime package")
-PY
-)"
-
-export PATH="$VENV_PATH/bin:/usr/local/bin:/usr/bin:/bin"
+export PATH="$VENV_PATH/bin:$CUDA_HOME_PATH/bin:/usr/local/bin:/usr/bin:/bin"
 export CC=/usr/bin/gcc
 export CXX=/usr/bin/g++
 export CUDA_HOME="$CUDA_HOME_PATH"
 export PYTHONUNBUFFERED=1
+export PYTHONPATH="$SGLANG_SOURCE_PATH/python${PYTHONPATH:+:$PYTHONPATH}"
 
 cat <<EOF
 Starting native SGLang diffusion server.
@@ -148,6 +182,7 @@ Runtime:
   vae_tile_sample_min_num_frames=${VAE_TILE_SAMPLE_MIN_NUM_FRAMES}
   vae_tile_sample_stride_num_frames=${VAE_TILE_SAMPLE_STRIDE_NUM_FRAMES}
   CUDA_HOME=${CUDA_HOME}
+  SGLang_source=${SGLANG_SOURCE_PATH}
 
 EOF
 

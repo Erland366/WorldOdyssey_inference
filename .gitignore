@@ -10,6 +10,7 @@ wheels/
 .venv
 .venv*
 .venv*/
+.deps/
 
 # Local secrets
 .env

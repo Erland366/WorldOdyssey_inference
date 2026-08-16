@@ -45,7 +45,7 @@ DEFAULT_SGLANG_VIDEO_API_FORMAT = SGLANG_VIDEO_API_FORMAT_MULTIPART
 SGLANG_VIDEO_API_FORMATS = frozenset(
     {SGLANG_VIDEO_API_FORMAT_JSON, SGLANG_VIDEO_API_FORMAT_MULTIPART}
 )
-SGLANG_MULTIPART_PROVIDER_OPTION_KEYS = frozenset({"request_fields", "extra_body"})
+SGLANG_MULTIPART_PROVIDER_OPTION_KEYS = frozenset({"request_fields", "extra_body", "extra_params"})
 SGLANG_MANAGED_VIDEO_FIELDS = frozenset(
     {
         "prompt",
@@ -59,6 +59,7 @@ SGLANG_MANAGED_VIDEO_FIELDS = frozenset(
         "num_inference_steps",
         "seed",
         "guidance_scale",
+        "generate_sound",
     }
 )
 
@@ -135,7 +136,7 @@ class LocalSGLangProvider:
             local=True,
             models=[],
             modes=[VideoMode.TEXT_TO_VIDEO, VideoMode.IMAGE_TO_VIDEO],
-            supports_audio=False,
+            supports_audio=self.server_api_format == SGLANG_VIDEO_API_FORMAT_MULTIPART,
             supports_seed=self.server_api_format == SGLANG_VIDEO_API_FORMAT_MULTIPART,
             supports_custom_resolution=True,
             supports_reference_images=False,
@@ -188,8 +189,6 @@ class LocalSGLangProvider:
         if missing:
             joined = ", ".join(f"options.{field}" for field in missing)
             raise UnsupportedRequestError(f"Local SGLang requires explicit {joined}.")
-        if request.options.generate_audio:
-            raise UnsupportedRequestError("Local SGLang text_to_video does not generate audio.")
 
     def _validate_i2v_request(self, request: VideoGenerationRequest) -> None:
         image_inputs = [
@@ -211,8 +210,6 @@ class LocalSGLangProvider:
             request.options.width is None or request.options.height is None
         ):
             raise UnsupportedRequestError("Local SGLang needs explicit width and height instead of resolution only.")
-        if request.options.generate_audio:
-            raise UnsupportedRequestError("Local SGLang I2V does not generate audio.")
 
     def _validate_native_server_request_options(self, request: VideoGenerationRequest) -> None:
         options = request.options
@@ -232,6 +229,8 @@ class LocalSGLangProvider:
                 unsupported_fields.append("options.seed")
             if options.guidance_scale is not None:
                 unsupported_fields.append("options.guidance_scale")
+            if options.generate_audio is not None:
+                unsupported_fields.append("options.generate_audio")
             if options.provider_options:
                 unsupported_fields.append("options.provider_options")
         if unsupported_fields:
@@ -278,6 +277,8 @@ class LocalSGLangProvider:
             payload["seed"] = options.seed
         if options.guidance_scale is not None:
             payload["guidance_scale"] = options.guidance_scale
+        if options.generate_audio is not None:
+            payload["generate_sound"] = options.generate_audio
         if self.server_api_format == SGLANG_VIDEO_API_FORMAT_MULTIPART:
             self._apply_multipart_provider_options(payload, options.provider_options)
         return payload
@@ -486,7 +487,7 @@ class LocalSGLangProvider:
         if unknown_keys:
             joined = ", ".join(f"options.provider_options.{key}" for key in unknown_keys)
             raise UnsupportedRequestError(
-                "SGLang multipart provider_options supports only request_fields and extra_body. "
+                "SGLang multipart provider_options supports only request_fields, extra_body, and extra_params. "
                 f"Unsupported: {joined}."
             )
 
@@ -508,9 +509,10 @@ class LocalSGLangProvider:
                     field_value,
                 )
 
-        extra_body = provider_options.get("extra_body")
-        if extra_body is not None and not isinstance(extra_body, str):
-            json.dumps(extra_body)
+        for container_name in ("extra_body", "extra_params"):
+            container = provider_options.get(container_name)
+            if container is not None and not isinstance(container, str):
+                json.dumps(container)
 
     @staticmethod
     def _validate_multipart_scalar(field_name: str, field_value: Any) -> None:
@@ -522,7 +524,7 @@ class LocalSGLangProvider:
             return
         raise UnsupportedRequestError(
             f"{field_name} must be a string, number, or boolean multipart field. "
-            "Use options.provider_options.extra_body for structured JSON."
+            "Use options.provider_options.extra_params for structured JSON."
         )
 
     @staticmethod
@@ -531,9 +533,12 @@ class LocalSGLangProvider:
             return
         request_fields = provider_options.get("request_fields") or {}
         payload.update(request_fields)
-        if "extra_body" in provider_options:
-            extra_body = provider_options["extra_body"]
-            payload["extra_body"] = extra_body if isinstance(extra_body, str) else json.dumps(extra_body, sort_keys=True)
+        for container_name in ("extra_body", "extra_params"):
+            if container_name in provider_options:
+                container = provider_options[container_name]
+                payload[container_name] = (
+                    container if isinstance(container, str) else json.dumps(container, sort_keys=True)
+                )
 
     @staticmethod
     def _encode_multipart_field(name: str, value: Any) -> str:

@@ -19,6 +19,8 @@ The main supported local T2V model is:
 FastVideo/FastWan2.1-T2V-1.3B-Diffusers
 ```
 
+Cosmos 3 uses the same runtime and API with model `nvidia/Cosmos3-Nano`.
+
 The common local I2V smoke model used by the checked-in config is:
 
 ```text
@@ -44,8 +46,8 @@ FP8 transformer:  lmsys/hunyuanvideo-modelopt-fp8-sglang-transformer
 Run from the repository root:
 
 ```bash
-cd /home/coder/Python_project/WorldOdyssey_inference
-bash scripts/setup_video_backend.sh
+cd /path/to/WorldOdyssey_inference
+./install.sh
 ```
 
 What this does:
@@ -53,7 +55,9 @@ What this does:
 - initializes the WorldOdyssey input repository submodule under `submodule/worldodyssey`
 - installs main server dependencies into `.venv`
 - installs the unified SGLang Diffusion runtime into `.venv_sglang`
-- preserves existing local ML packages by using `uv sync --inexact`
+- installs FastWan and Cosmos 3 support into that one GPU runtime
+- pins the Cosmos-capable SGLang source checkout under `.deps/sglang`
+- enforces the exact backend dependency set from `uv.lock` with `uv sync`
 - verifies key backend packages after installation
 
 Do not use conda for this setup unless explicitly approved. Do not use `uv run`.
@@ -74,6 +78,16 @@ bash scripts/serve_sglang_diffusion.sh FastVideo/FastWan2.1-T2V-1.3B-Diffusers \
   --attention-backend video_sparse_attn \
   --VSA-sparsity 0.5
 ```
+
+For Cosmos 3 Nano without gated local guardrail weights:
+
+```bash
+SGLANG_DISABLE_COSMOS3_GUARDRAILS=1 \
+bash scripts/serve_sglang_diffusion.sh nvidia/Cosmos3-Nano
+```
+
+Only one checkpoint is loaded per native process. Switching between Cosmos and FastWan requires restarting SGLang,
+not changing or restarting the provider-neutral backend.
 
 For I2V:
 
@@ -157,7 +171,7 @@ Leave the tmux session open after use so logs stay available.
 In a second shell, point the backend at the SGLang server:
 
 ```bash
-cd /home/coder/Python_project/WorldOdyssey_inference
+cd /path/to/WorldOdyssey_inference
 export WORLDODYSSEY_SGLANG_BASE_URL=http://127.0.0.1:30000
 source .venv/bin/activate
 python scripts/serve_video_backend.py --host 127.0.0.1 --port 8000
@@ -529,7 +543,7 @@ Full real I2V inference through the API is a slow GPU validation step and was no
 If SGLang cannot find CUDA runtime libraries, rerun:
 
 ```bash
-bash scripts/setup_video_backend.sh
+./install.sh
 ```
 
 The SGLang launcher sets these runtime guards:

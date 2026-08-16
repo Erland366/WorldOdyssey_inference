@@ -31,7 +31,7 @@ Cause: Miniconda compiler wrappers can conflict with Triton or FastVideo kernel 
 Fix: Run FastVideo backend checks with explicit system compilers while keeping the virtualenv's Python first on `PATH`:
 
 ```bash
-source .venv/bin/activate
+source .venv_fastvideo/bin/activate
 export CC=/usr/bin/gcc
 export CXX=/usr/bin/g++
 export PATH="$VIRTUAL_ENV/bin:/usr/bin:$PATH"
@@ -41,7 +41,7 @@ python -m pytest tests/backends -m slow -q -s
 For one-line validation:
 
 ```bash
-source .venv/bin/activate && export CC=/usr/bin/gcc CXX=/usr/bin/g++ PATH="$VIRTUAL_ENV/bin:/usr/bin:$PATH" && python -m pytest tests/backends -m slow -q -s
+source .venv_fastvideo/bin/activate && export CC=/usr/bin/gcc CXX=/usr/bin/g++ PATH="$VIRTUAL_ENV/bin:/usr/bin:$PATH" && python -m pytest tests/backends -m slow -q -s
 ```
 
 ## Diffusers Video Export Falls Back To OpenCV And Fails On `libGL.so.1`

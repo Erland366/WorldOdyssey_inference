@@ -282,9 +282,15 @@ def test_sglang_multipart_api_accepts_native_request_fields(tmp_path: Path) -> N
             "num_inference_steps": 1,
             "seed": 123,
             "guidance_scale": 4.5,
+            "generate_audio": True,
             "provider_options": {
-                "request_fields": {"enable_teacache": True},
+                "request_fields": {"enable_teacache": True, "flow_shift": 10.0},
                 "extra_body": {"denoise": "fast"},
+                "extra_params": {
+                    "guardrails": False,
+                    "use_resolution_template": False,
+                    "use_duration_template": False,
+                },
             },
         },
     )
@@ -293,13 +299,21 @@ def test_sglang_multipart_api_accepts_native_request_fields(tmp_path: Path) -> N
     payload = provider.build_server_payload(request)
 
     assert provider.capability.supports_seed is True
+    assert provider.capability.supports_audio is True
     assert provider.capability.setup["server_api_format"] == SGLANG_VIDEO_API_FORMAT_MULTIPART
     assert payload["negative_prompt"] == "low quality"
     assert payload["num_inference_steps"] == 1
     assert payload["seed"] == 123
     assert payload["guidance_scale"] == 4.5
+    assert payload["generate_sound"] is True
     assert payload["enable_teacache"] is True
+    assert payload["flow_shift"] == 10.0
     assert json.loads(payload["extra_body"]) == {"denoise": "fast"}
+    assert json.loads(payload["extra_params"]) == {
+        "guardrails": False,
+        "use_duration_template": False,
+        "use_resolution_template": False,
+    }
 
 
 def test_sglang_multipart_rejects_launch_time_options(tmp_path: Path) -> None:
@@ -514,7 +528,11 @@ def test_sglang_provider_runs_multipart_native_server_api(tmp_path: Path) -> Non
                 "num_inference_steps": 1,
                 "seed": 123,
                 "guidance_scale": 4.5,
-                "provider_options": {"request_fields": {"enable_teacache": True}},
+                "generate_audio": False,
+                "provider_options": {
+                    "request_fields": {"enable_teacache": True, "flow_shift": 10.0},
+                    "extra_params": {"guardrails": False},
+                },
             },
         )
         record = VideoJobRecord(
@@ -538,7 +556,10 @@ def test_sglang_provider_runs_multipart_native_server_api(tmp_path: Path) -> Non
         assert b'name="num_inference_steps"\r\n\r\n1' in body
         assert b'name="seed"\r\n\r\n123' in body
         assert b'name="guidance_scale"\r\n\r\n4.5' in body
+        assert b'name="generate_sound"\r\n\r\nfalse' in body
         assert b'name="enable_teacache"\r\n\r\ntrue' in body
+        assert b'name="flow_shift"\r\n\r\n10.0' in body
+        assert b'name="extra_params"\r\n\r\n{"guardrails": false}' in body
         assert "POST /v1/videos (multipart)" in paths.log_path.read_text(encoding="utf-8")
         assert result.metrics["sglang_video_api_format"] == "multipart"
     finally:

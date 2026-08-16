@@ -18,13 +18,14 @@ There is no one-shot generation fallback, no `sglang generate` backend path, and
 Run the setup command from the repository root:
 
 ```bash
-bash scripts/setup_video_backend.sh
+./install.sh
 ```
 
 This command:
 
-- syncs the main `.venv` dependencies for the FastAPI server with `uv sync --inexact`
+- syncs the exact main `.venv` dependencies for the FastAPI server with `uv sync`
 - installs or updates the isolated `.venv_sglang` SGLang Diffusion environment
+- enables both FastWan and Cosmos 3 in that environment from a pinned SGLang source revision
 - initializes the WorldOdyssey input repository submodule under `submodule/worldodyssey`
 - verifies the server packages are importable
 
@@ -39,6 +40,13 @@ WORLDODYSSEY_SGLANG_NUM_GPUS=1 \
 bash scripts/serve_sglang_diffusion.sh FastVideo/FastWan2.1-T2V-1.3B-Diffusers \
   --attention-backend video_sparse_attn \
   --VSA-sparsity 0.5
+```
+
+For Cosmos 3, use the same launcher and API:
+
+```bash
+SGLANG_DISABLE_COSMOS3_GUARDRAILS=1 \
+bash scripts/serve_sglang_diffusion.sh nvidia/Cosmos3-Nano
 ```
 
 Start Hunyuan FP8 with:

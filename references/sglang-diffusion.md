@@ -1,17 +1,17 @@
 # SGLang Diffusion Setup
 
-This guide records the working local setup for SGLang Diffusion on the WorldOdyssey inference host. It keeps SGLang
-outside the main `.venv` because the FastVideo/Diffusers stack and the SGLang Diffusion stack need different Torch and
-kernel-wheel versions.
+This guide records the working local setup for SGLang Diffusion on the WorldOdyssey inference host. The lightweight
+backend stays in `.venv`; every supported local GPU model, including FastWan and Cosmos 3, uses `.venv_sglang`.
 
 The local unified success path is:
 
 - Dedicated venv: `.venv_sglang`
-- `sglang[diffusion]==0.5.10.post1`
-- `torch==2.9.1+cu128`
-- `sglang-kernel==0.4.1`
+- stable compiled base: `sglang[diffusion]==0.5.10.post1`
+- Cosmos-capable SGLang source overlay pinned by `WORLDODYSSEY_SGLANG_SOURCE_REV`
+- `torch==2.11.0+cu128`
+- `sglang-kernel==0.4.3+cu129`
 - `cuda-python==12.9.0`
-- Hunyuan FP8 compatibility patch from `scripts/patch_sglang_hunyuan_fp8.py`
+- `cosmos-guardrail==0.3.1`
 - No `nvidia-*-cu13` runtime packages
 - Explicit `CUDA_HOME` pointing at the venv's `nvidia` package
 - Explicit system compiler and linker path so Triton does not pick Miniconda tools
@@ -27,10 +27,13 @@ Run the installer from the repository root:
 bash scripts/install_sglang_diffusion.sh
 ```
 
-The script creates or updates `.venv_sglang` by default. To use a different environment path:
+The script creates or updates `.venv_sglang` and checks out the exact source revision under `.deps/sglang`. To use
+different managed paths:
 
 ```bash
-SGLANG_DIFFUSION_VENV=/abs/path/to/.venv_sglang bash scripts/install_sglang_diffusion.sh
+SGLANG_DIFFUSION_VENV=/abs/path/to/.venv_sglang \
+WORLDODYSSEY_SGLANG_SOURCE=/abs/path/to/sglang-source \
+bash scripts/install_sglang_diffusion.sh
 ```
 
 The script intentionally uses `uv` only for virtual environment creation and dependency installation. It never uses
@@ -45,12 +48,13 @@ source .venv_sglang/bin/activate
 export PATH="$PWD/.venv_sglang/bin:/usr/local/bin:/usr/bin:/bin"
 export CC=/usr/bin/gcc
 export CXX=/usr/bin/g++
-export CUDA_HOME="$PWD/.venv_sglang/lib/python3.12/site-packages/nvidia"
+export CUDA_HOME=/usr/local/cuda
+export PYTHONPATH="$PWD/.deps/sglang/python"
 ```
 
 These guards are required for this host:
 
-- `CUDA_HOME` prevents `sgl-kernel` from treating Miniconda as the CUDA installation.
+- `CUDA_HOME` points JIT compilation at the complete CUDA 12.8 toolkit, including `nvcc`.
 - `PATH` puts `/usr/bin/ld` ahead of `/home/coder/miniconda3/bin/ld`.
 - `CC` and `CXX` force Triton JIT compilation through the system compiler pair.
 
@@ -63,7 +67,8 @@ source .venv_sglang/bin/activate
 export PATH="$PWD/.venv_sglang/bin:/usr/local/bin:/usr/bin:/bin"
 export CC=/usr/bin/gcc
 export CXX=/usr/bin/g++
-export CUDA_HOME="$PWD/.venv_sglang/lib/python3.12/site-packages/nvidia"
+export CUDA_HOME=/usr/local/cuda
+export PYTHONPATH="$PWD/.deps/sglang/python"
 
 python - <<'PY'
 from importlib import metadata
@@ -99,10 +104,10 @@ PY
 sglang serve --help
 ```
 
-Expected local probes on May 15, 2026:
+Expected local probes for the unified runtime:
 
 ```text
-torch 2.9.1+cu128
+torch 2.11.0+cu128
 torch cuda 12.8
 conv ok (1, 8, 5, 8, 8)
 ```
@@ -264,7 +269,7 @@ If unpinned `sglang[diffusion]` installs `sglang-kernel` and `nvidia-*-cu13` pac
 the pinned installer above. Do not try to fix this by adding CUDA 13 libraries to `LD_LIBRARY_PATH` on the current
 driver.
 
-For the unified profile, `sglang-kernel==0.4.1` is expected. CUDA 13 runtime packages are still not expected.
+For the unified profile, `sglang-kernel==0.4.3+cu129` is expected. CUDA 13 runtime packages are still not expected.
 
 If Hunyuan FP8 fails with `Invalid quantization method: modelopt`, rerun:
 

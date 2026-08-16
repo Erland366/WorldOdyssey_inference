@@ -8,3 +8,4 @@ Runbooks for operating `WorldOdyssey_inference`.
   submit tiny Wan batch requests, and run the imported WorldOdyssey `move_bookmark` task.
 - [Tiny models and Diffusers](tiny-models-and-diffusers.md): tiny Wan fixtures, Diffusers/FastVideo benchmarks, local
   FastVideo stack notes, and backend slow tests.
+- [Cosmos 3](cosmos3.md): unified SGLang installation, serving, submission, and version pins.

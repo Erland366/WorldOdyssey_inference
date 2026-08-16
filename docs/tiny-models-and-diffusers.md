@@ -184,6 +184,10 @@ SGLang server command.
 Use the benchmark harness to measure whether real Wan/FastWan models fit on the local GPUs and to compare VRAM and
 speed across Diffusers and FastVideo.
 
+Direct FastVideo benchmarking is deprecated and is not installed by `./install.sh`. Run
+`bash scripts/install_fastvideo.sh` explicitly only when reproducing these historical benchmark paths. Supported
+FastWan inference uses `.venv_sglang` through the provider-neutral backend.
+
 The primary matrix covers:
 
 - `Wan-AI/Wan2.1-T2V-1.3B-Diffusers` with Diffusers
@@ -200,7 +204,7 @@ provides those env vars. The FlashInfer guard keeps Wan InP on SGLang's Triton R
 Run a one-step fit check for the FastVideo 5B model on one GPU:
 
 ```bash
-source .venv/bin/activate
+source .venv_fastvideo/bin/activate
 python scripts/benchmark_wan_backends.py --stage fit --case fastvideo-5b --gpus 1
 ```
 
@@ -208,28 +212,28 @@ On RTX 4090s, the default `704x1280x121` FastVideo 5B fit check does not fit on 
 two GPUs:
 
 ```bash
-source .venv/bin/activate
+source .venv_fastvideo/bin/activate
 python scripts/benchmark_wan_backends.py --stage fit --case fastvideo-5b --gpus 2 --no-save-video
 ```
 
 Save the passing one-step 5B fit output video:
 
 ```bash
-source .venv/bin/activate
+source .venv_fastvideo/bin/activate
 python scripts/benchmark_wan_backends.py --stage fit --case fastvideo-5b --gpus 2 --save-fit-video
 ```
 
 Run the full two-stage matrix. The harness first runs one-step fit checks, then only benchmarks the cases that fit:
 
 ```bash
-source .venv/bin/activate
+source .venv_fastvideo/bin/activate
 python scripts/benchmark_wan_backends.py --stage all --gpus 1 2
 ```
 
 Override frame count for longer-video checks:
 
 ```bash
-source .venv/bin/activate
+source .venv_fastvideo/bin/activate
 python scripts/benchmark_wan_backends.py --stage all --case diffusers-1.3b fastvideo-1.3b --gpus 1 2 --num-frames 121
 ```
 
@@ -301,21 +305,21 @@ python -m pytest tests/backends/test_diffusers_example.py -m slow
 Run only the FastVideo backend example:
 
 ```bash
-source .venv/bin/activate
+source .venv_fastvideo/bin/activate
 python -m pytest tests/backends/test_fastvideo_example.py -m slow
 ```
 
 Run only the tiny FastWan DMD FastVideo example:
 
 ```bash
-source .venv/bin/activate
+source .venv_fastvideo/bin/activate
 python -m pytest tests/backends/test_fastvideo_tiny_fastwan.py -m slow
 ```
 
 Run only the tiny VSA FastVideo example:
 
 ```bash
-source .venv/bin/activate
+source .venv_fastvideo/bin/activate
 python -m pytest tests/backends/test_fastvideo_tiny_vsa.py -m slow
 ```
 
@@ -333,26 +337,19 @@ persistent videos to `artifacts/backend-videos/`. This is not the provider-neutr
 
 ## Local FastVideo Stack Notes
 
-The local FastVideo stack is pinned to a driver-compatible CUDA 12.4 Torch runtime:
+The deprecated standalone installer creates `.venv_fastvideo` with the H100/CUDA-12.8 pins recorded in
+`scripts/install_fastvideo.sh`:
 
-- `torch==2.6.0+cu124`
-- `torchvision==0.21.0+cu124`
-- `torchaudio==2.6.0+cu124`
-- `fastvideo==0.1.7` installed without allowing dependencies to upgrade Torch
+- `torch==2.11.0+cu128`
+- `torchvision==0.26.0+cu128`
+- `torchaudio==2.11.0+cu128`
+- `fastvideo==0.1.7`
+- `fastvideo-kernel==0.2.2`
+- `hf-transfer==0.1.9`
 
-Use uv's PyTorch backend selector for the Torch stack, then install FastVideo without dependency resolution:
+Use `./install.sh` for supported FastWan inference through SGLang. Run `bash scripts/install_fastvideo.sh` only for
+legacy direct benchmarks. Keeping the legacy runtime out of `.venv` prevents unrelated backend packages from changing
+its Torch ABI.
 
-```bash
-source .venv/bin/activate
-uv pip install --torch-backend cu124 torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0
-uv pip install --no-deps fastvideo==0.1.7
-```
-
-`sitecustomize.py` applies a narrow Torch/FastVideo compatibility hook at interpreter startup. This is needed because
-FastVideo worker subprocesses import FastVideo independently and `fastvideo==0.1.7` writes
-`torch._dynamo.config.recompile_limit`, a key that does not exist in `torch==2.6.0`.
-
-The failed CUDA-12.4 SGLang experiment is documented in `references/troubleshooting.md`: forcing `sglang==0.5.5` onto
-`torch==2.6.0+cu124` fails before the CLI starts because `sgl_kernel` cannot load `common_ops` due to a torch C++ ABI
-symbol mismatch. The working SGLang path is the isolated `.venv_sglang` stack described in
-`references/sglang-diffusion.md`.
+The earlier CUDA-12.4 compatibility experiment remains documented in `references/troubleshooting.md` as historical
+context. The working SGLang path remains isolated in `.venv_sglang`.
