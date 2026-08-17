@@ -542,10 +542,9 @@ Current validation status:
 - provider unit tests cover multipart FP8 request fields and I2V file upload
 - WorldOdyssey parent `inputs/` dry-run expansion into a batch request is covered by tests
 - YAML dry-run and override behavior for T2V/I2V is covered by tests
-- real FastWan T2V VSA server startup was validated with `WORLDODYSSEY_SGLANG_NUM_GPUS=2` until Uvicorn served
-  `http://127.0.0.1:30000`
-- the README FastWan T2V curl was validated end to end through the API on 2026-05-17; it completed in 17.0533 seconds
-  and wrote `artifacts/video-backend/videos/vid_20260517T185746Z_3497cb08/output.mp4`
+- FastWan T2V VSA was validated end to end through the unified single-GPU installation and provider-neutral API on
+  2026-08-17. The 320x192 request used 5 frames, 1 inference step, and 16 fps; the API job completed in 2.1697 seconds
+  and the downloaded H.264 artifact is `artifacts/backend-videos/fastwan-sglang-unified-smoke.mp4`
 - native Hunyuan FP8 SGLang multipart smoke was validated on 2026-05-18 and wrote
   `artifacts/video-backend/75a30c04-59f1-4255-ba8c-6ac9aee91d1b.mp4`
 - Hunyuan FP8 was validated through the provider-neutral FastAPI app on 2026-05-18; job

@@ -31,8 +31,11 @@ other SGLang Diffusion models through the same provider-neutral video API.
   `attention_backend=video_sparse_attn` and
   `attention_backend_config={"VSA_sparsity": 0.5}`.
 - The public backend and SGLang server were stopped cleanly before shutdown.
+- FastWan passed the unified provider-neutral API smoke test on 2026-08-17. The request used `320x192`, 5 frames,
+  1 inference step, and 16 fps; `ffprobe` confirmed H.264, `320x192`, 16 fps, and 5 decoded frames. The result is
+  `artifacts/backend-videos/fastwan-sglang-unified-smoke.mp4`.
 
-## Primary TODO
+## Primary TODO (completed)
 
 Complete the FastWan end-to-end smoke test.
 

@@ -12,6 +12,7 @@ The local unified success path is:
 - `sglang-kernel==0.4.3+cu129`
 - `cuda-python==12.9.0`
 - `cosmos-guardrail==0.3.1`
+- VSA built locally from FastVideo source revision `055e52e5ea44b30cf982a3f248baa36ef386a39c`
 - No `nvidia-*-cu13` runtime packages
 - Explicit `CUDA_HOME` pointing at the venv's `nvidia` package
 - Explicit system compiler and linker path so Triton does not pick Miniconda tools
@@ -27,8 +28,10 @@ Run the installer from the repository root:
 bash scripts/install_sglang_diffusion.sh
 ```
 
-The script creates or updates `.venv_sglang` and checks out the exact source revision under `.deps/sglang`. To use
-different managed paths:
+The script creates or updates `.venv_sglang`, checks out the exact SGLang source revision under `.deps/sglang`, and
+checks out the VSA source revision recorded by `WORLDODYSSEY_VSA_SOURCE_REV` under `.deps/fastvideo-vsa`. It builds
+that VSA extension locally against the pinned Torch ABI. Do not replace it with the PyPI VSA wheel, which targets an
+older Torch ABI and is incompatible with this unified environment. To use different managed paths:
 
 ```bash
 SGLANG_DIFFUSION_VENV=/abs/path/to/.venv_sglang \
@@ -130,19 +133,23 @@ timeout 300s bash scripts/serve_sglang_diffusion.sh FastVideo/FastWan2.1-T2V-1.3
   --VSA-sparsity 0.5
 ```
 
-Validated result on May 15, 2026:
+Validated end-to-end result on August 17, 2026:
 
 - Model: `FastVideo/FastWan2.1-T2V-1.3B-Diffusers`
 - Backend: `attention_backend=video_sparse_attn`
 - VSA sparsity: `0.5`
-- Native server reached `http://127.0.0.1:30000`
+- Request: `320x192`, 5 frames, 1 inference step, 16 fps
+- Provider-neutral API elapsed time: 2.1697 seconds
+- Validated output: H.264, `320x192`, 16 fps, 5 decoded frames
+- Artifact: `artifacts/backend-videos/fastwan-sglang-unified-smoke.mp4`
 
 The log line `Selected attention backend: 'video_sparse_attn' not in supported attention backends ... Use fa3 as
 default backend` can still appear for attention sites that do not support VSA, such as cross-attention. The Wan
 transformer block path is still selected with `WanTransformerBlock_VSA`, and the pipeline logs `Using Video Sparse
 Attention backend.` before denoising.
 
-The local launcher accepts the SGLang `--VSA-sparsity` flag and passes it through to the native server.
+The local launcher accepts the established `--VSA-sparsity` flag and translates it to the pinned native server's
+structured `--attention-backend-config` argument.
 
 ## Memory Offload
 
