@@ -30,8 +30,6 @@ from worldodyssey_inference.video_backend.providers import (
 
 DEFAULT_WORLDODYSSEY_TASK_DIR = (
     Path(__file__).resolve().parents[2]
-    / "submodule"
-    / "worldodyssey"
     / "inputs"
     / "move_bookmark"
 )

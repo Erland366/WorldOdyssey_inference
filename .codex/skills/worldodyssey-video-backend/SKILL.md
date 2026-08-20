@@ -27,45 +27,32 @@ implemented.
 
 ## Recommended Practice
 
-Start native SGLang first:
+Start the configured native SGLang model server first:
 
 ```bash
-WORLDODYSSEY_SGLANG_NUM_GPUS=1 \
-bash scripts/serve_sglang_diffusion.sh FastVideo/FastWan2.1-T2V-1.3B-Diffusers \
-  --attention-backend video_sparse_attn \
-  --VSA-sparsity 0.5
+bash scripts/run_fastwan_t2v.sh
 ```
 
 Cosmos 3 uses the same native server and provider-neutral API. Start its checkpoint with:
 
 ```bash
-SGLANG_DISABLE_COSMOS3_GUARDRAILS=1 \
-bash scripts/serve_sglang_diffusion.sh nvidia/Cosmos3-Nano
+bash scripts/run_cosmos3.sh
 ```
 
 One native process loads one checkpoint. Restart SGLang to switch between FastWan and Cosmos; keep the FastAPI
-backend and request schema unchanged. Submit the Cosmos helper with `bash scripts/run_cosmos3.sh`.
+backend and request schema unchanged. Submit the Cosmos helper with `bash scripts/generate_cosmos3.sh`.
 
 For Hunyuan FP8, start native SGLang with the multipart API format:
 
 ```bash
-WORLDODYSSEY_SGLANG_OFFLOAD_PRESET=memory \
-WORLDODYSSEY_SGLANG_LOG_LEVEL=debug \
-WORLDODYSSEY_SGLANG_NUM_GPUS=2 \
-WORLDODYSSEY_SGLANG_TP_SIZE=1 \
-WORLDODYSSEY_SGLANG_SP_DEGREE=2 \
-bash scripts/serve_sglang_diffusion.sh hunyuanvideo-community/HunyuanVideo \
-  --transformer-path lmsys/hunyuanvideo-modelopt-fp8-sglang-transformer
+bash scripts/run_hunyuan_fp8.sh
 ```
 
 If a video model OOMs at startup or during inference, restart the native SGLang server with the explicit memory offload
 preset:
 
 ```bash
-WORLDODYSSEY_SGLANG_OFFLOAD_PRESET=memory \
-WORLDODYSSEY_SGLANG_LOG_LEVEL=debug \
-WORLDODYSSEY_SGLANG_NUM_GPUS=1 \
-bash scripts/serve_sglang_diffusion.sh weizhou03/Wan2.1-Fun-1.3B-InP-Diffusers
+bash scripts/run_wan_inp_i2v.sh
 ```
 
 The preset expands to layerwise DiT offload, encoder/VAE CPU offload, pinned CPU memory, VAE tiling, VAE slicing, and
@@ -78,20 +65,14 @@ compile with an absent `nvcc`. Keep offload as a SGLang launch-time setting; do 
 Then start the provider-neutral backend from the main environment:
 
 ```bash
-export WORLDODYSSEY_SGLANG_BASE_URL=http://127.0.0.1:30000
-source .venv/bin/activate
-python scripts/serve_video_backend.py --host 127.0.0.1 --port 8000
+bash scripts/run_backend.sh
 ```
 
 `WORLDODYSSEY_SGLANG_MODEL` is optional metadata. The backend forwards each request's `model` to native SGLang and
 does not reject requests based on a backend-side model hint.
 
-WorldOdyssey task inputs live in the `submodule/worldodyssey` git submodule. `./install.sh`
-initializes it; for input-only work, run:
-
-```bash
-git submodule update --init --recursive submodule/worldodyssey
-```
+WorldOdyssey task inputs are normal local files under `inputs/` by default. Setup does not download task data; callers
+may also pass any explicit task directory to the submitter.
 
 For repeated WorldOdyssey inference, prefer YAML configs:
 
@@ -138,7 +119,7 @@ scans direct child folders with `task.json` and submits a batch:
 
 ```bash
 source .venv/bin/activate
-python scripts/submit_worldodyssey_task.py submodule/worldodyssey/inputs --dry-run
+python scripts/submit_worldodyssey_task.py inputs --dry-run
 ```
 
 Use `--download-dir`, not `--download-path`, for parent-directory batch outputs.

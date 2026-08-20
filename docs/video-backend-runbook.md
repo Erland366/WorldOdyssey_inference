@@ -52,7 +52,6 @@ cd /path/to/WorldOdyssey_inference
 
 What this does:
 
-- initializes the WorldOdyssey input repository submodule under `submodule/worldodyssey`
 - installs main server dependencies into `.venv`
 - installs the unified SGLang Diffusion runtime into `.venv_sglang`
 - installs FastWan and Cosmos 3 support into that one GPU runtime
@@ -62,28 +61,21 @@ What this does:
 
 Do not use conda for this setup unless explicitly approved. Do not use `uv run`.
 
-If you skip setup and only need the WorldOdyssey task inputs, initialize the submodule directly:
-
-```bash
-git submodule update --init --recursive submodule/worldodyssey
-```
+WorldOdyssey task inputs are not downloaded by setup. Place task folders under `inputs/` or pass an explicit path to
+the submitter.
 
 ## 2. Start Native SGLang
 
 Start SGLang in the foreground first so startup errors surface immediately:
 
 ```bash
-WORLDODYSSEY_SGLANG_NUM_GPUS=1 \
-bash scripts/serve_sglang_diffusion.sh FastVideo/FastWan2.1-T2V-1.3B-Diffusers \
-  --attention-backend video_sparse_attn \
-  --VSA-sparsity 0.5
+bash scripts/run_fastwan_t2v.sh
 ```
 
 For Cosmos 3 Nano without gated local guardrail weights:
 
 ```bash
-SGLANG_DISABLE_COSMOS3_GUARDRAILS=1 \
-bash scripts/serve_sglang_diffusion.sh nvidia/Cosmos3-Nano
+bash scripts/run_cosmos3.sh
 ```
 
 Only one checkpoint is loaded per native process. Switching between Cosmos and FastWan requires restarting SGLang,
@@ -92,32 +84,34 @@ not changing or restarting the provider-neutral backend.
 For I2V:
 
 ```bash
-WORLDODYSSEY_SGLANG_WORKLOAD_TYPE=i2v \
-WORLDODYSSEY_SGLANG_OFFLOAD_PRESET=memory \
-WORLDODYSSEY_SGLANG_LOG_LEVEL=debug \
-WORLDODYSSEY_SGLANG_NUM_GPUS=1 \
-bash scripts/serve_sglang_diffusion.sh weizhou03/Wan2.1-Fun-1.3B-InP-Diffusers
+bash scripts/run_fastwan_i2v.sh
+```
+
+For the checked-in low-memory Wan InP I2V smoke profile:
+
+```bash
+bash scripts/run_wan_inp_i2v.sh
 ```
 
 For Hunyuan FP8:
 
 ```bash
-WORLDODYSSEY_SGLANG_OFFLOAD_PRESET=memory \
-WORLDODYSSEY_SGLANG_LOG_LEVEL=debug \
-WORLDODYSSEY_SGLANG_NUM_GPUS=2 \
-WORLDODYSSEY_SGLANG_TP_SIZE=1 \
-WORLDODYSSEY_SGLANG_SP_DEGREE=2 \
-bash scripts/serve_sglang_diffusion.sh hunyuanvideo-community/HunyuanVideo \
-  --transformer-path lmsys/hunyuanvideo-modelopt-fp8-sglang-transformer
+bash scripts/run_hunyuan_fp8.sh
 ```
+
+For the tiny debug checkpoint:
+
+```bash
+bash scripts/run_tiny_wan.sh
+```
+
+All model launchers accept trailing SGLang arguments and environment overrides. Use the shared
+`scripts/serve_sglang_diffusion.sh <model-id>` directly only for an unlisted checkpoint or a fully custom profile.
 
 If the model OOMs during startup or inference, restart SGLang with the explicit memory offload preset:
 
 ```bash
-WORLDODYSSEY_SGLANG_OFFLOAD_PRESET=memory \
-WORLDODYSSEY_SGLANG_LOG_LEVEL=debug \
-WORLDODYSSEY_SGLANG_NUM_GPUS=1 \
-bash scripts/serve_sglang_diffusion.sh weizhou03/Wan2.1-Fun-1.3B-InP-Diffusers
+bash scripts/run_wan_inp_i2v.sh
 ```
 
 The preset is native-server-only and expands to `--dit-layerwise-offload`, `--dit-cpu-offload false`,
@@ -155,7 +149,7 @@ tmux new-session -s "tmux-$(( $(tmux list-sessions -F '#S' 2>/dev/null | sed -n 
 Then send the SGLang command to the tmux session:
 
 ```bash
-tmux send-keys -t <session> 'WORLDODYSSEY_SGLANG_NUM_GPUS=1 bash scripts/serve_sglang_diffusion.sh FastVideo/FastWan2.1-T2V-1.3B-Diffusers --attention-backend video_sparse_attn --VSA-sparsity 0.5' Enter
+tmux send-keys -t <session> 'bash scripts/run_fastwan_t2v.sh' Enter
 ```
 
 Check the pane:
@@ -168,14 +162,15 @@ Leave the tmux session open after use so logs stay available.
 
 ## 3. Start The Backend
 
-In a second shell, point the backend at the SGLang server:
+In a second shell, start the backend. The launcher points it at the default SGLang URL:
 
 ```bash
 cd /path/to/WorldOdyssey_inference
-export WORLDODYSSEY_SGLANG_BASE_URL=http://127.0.0.1:30000
-source .venv/bin/activate
-python scripts/serve_video_backend.py --host 127.0.0.1 --port 8000
+bash scripts/run_backend.sh
 ```
+
+Override `WORLDODYSSEY_SGLANG_BASE_URL`, `WORLDODYSSEY_BACKEND_HOST`, or `WORLDODYSSEY_BACKEND_PORT` when the services
+do not use their default addresses.
 
 `WORLDODYSSEY_SGLANG_VIDEO_API_FORMAT` defaults to `multipart`, matching the unified native server launcher. Set it to
 `json` only when intentionally using the legacy SGLang 0.5.5 wrapper stack.
@@ -303,7 +298,7 @@ curl -X POST http://127.0.0.1:8000/v1/video/generations \
     "mode": "image_to_video",
     "model": "weizhou03/Wan2.1-Fun-1.3B-InP-Diffusers",
     "prompt": "Generate a first-person video of a hand moving the bookmark into the yellow book.",
-    "image_path": "submodule/worldodyssey/inputs/move_bookmark/frames/main.png",
+    "image_path": "inputs/move_bookmark/frames/main.png",
     "options": {
       "height": 256,
       "width": 448,
@@ -415,23 +410,19 @@ curl -L -o output.mp4 http://127.0.0.1:8000/v1/video/generations/<job_id>/video
 
 ## 8. Run WorldOdyssey Inputs
 
-WorldOdyssey inputs are tracked as a git submodule at `submodule/worldodyssey`. The setup script initializes it; if the
-task paths below are missing, run:
-
-```bash
-git submodule update --init --recursive submodule/worldodyssey
-```
+WorldOdyssey inputs are normal local files and are not downloaded by setup. Place task folders under `inputs/`, or
+pass another task path directly to the submitter.
 
 The imported task lives at:
 
 ```text
-submodule/worldodyssey/inputs/move_bookmark
+inputs/move_bookmark
 ```
 
 The parent input root is:
 
 ```text
-submodule/worldodyssey/inputs
+inputs
 ```
 
 The adapter reads `task.json`, uses only the `task` field as the generation prompt, and keeps the topology graph plus

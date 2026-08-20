@@ -7,7 +7,8 @@ The primary local path is:
 - FastAPI backend in the main `.venv`
 - isolated SGLang Diffusion runtime in `.venv_sglang`
 - local provider id: `sglang`
-- native SGLang server launcher: `scripts/serve_sglang_diffusion.sh`
+- one short server launcher per model under `scripts/run_*.sh`
+- shared advanced launcher: `scripts/serve_sglang_diffusion.sh`
 - optional launcher memory offload preset: `WORLDODYSSEY_SGLANG_OFFLOAD_PRESET=memory`
 - validated T2V model: `FastVideo/FastWan2.1-T2V-1.3B-Diffusers`
 - validated Cosmos model: `nvidia/Cosmos3-Nano`
@@ -69,14 +70,13 @@ Run the one-command installer from the repository root:
 
 This command:
 
-- initializes the WorldOdyssey input repository submodule under `submodule/worldodyssey`
 - installs the exact locked backend dependencies into `.venv` with `uv sync`
 - installs one unified SGLang Diffusion runtime for FastWan and Cosmos 3 into `.venv_sglang`
 - checks out the exact Cosmos-capable SGLang source revision recorded in `runtime-versions.env`
 - keeps the GPU runtime isolated only from the lightweight backend `.venv`
 - verifies the main server packages after installation
 
-For a lightweight development install without the GPU runtime or submodule, use:
+For a lightweight development install without the GPU runtime, use:
 
 ```bash
 ./install.sh --main-only
@@ -99,33 +99,148 @@ Run `./install.sh --help` for the remaining selective-install options. The legac
 
 Do not use conda for this setup unless explicitly approved. Do not use `uv run`.
 
-If you intentionally skip setup and only need the WorldOdyssey inputs, initialize the submodule directly:
+## Run a model
+
+Each supported checkpoint has a model-server launcher. Run one of these in the first shell:
+
+| Model | Command |
+| --- | --- |
+| Cosmos 3 Nano | `bash scripts/run_cosmos3.sh` |
+| FastWan 2.1 T2V with VSA | `bash scripts/run_fastwan_t2v.sh` |
+| FastWan 2.2 I2V | `bash scripts/run_fastwan_i2v.sh` |
+| Wan 2.1 Fun InP I2V, low-memory | `bash scripts/run_wan_inp_i2v.sh` |
+| HunyuanVideo ModelOpt FP8 | `bash scripts/run_hunyuan_fp8.sh` |
+| Tiny Wan debug model | `bash scripts/run_tiny_wan.sh` |
+
+Extra arguments are forwarded to SGLang. Environment variables still override GPU count, ports, offload settings,
+and model-specific defaults. The lower-level `scripts/serve_sglang_diffusion.sh` remains available for arbitrary
+checkpoints.
+
+Start the provider-neutral API in a second shell:
 
 ```bash
-git submodule update --init --recursive submodule/worldodyssey
+bash scripts/run_backend.sh
 ```
 
-## Run Cosmos 3
+Only one model checkpoint can be loaded by a model server at a time. Stop it and run another model script to switch;
+the backend can stay running.
 
-Start the native server with the single-GPU `nvidia/Cosmos3-Nano` checkpoint. Guardrails require gated Hugging Face
-weights; this local example disables them explicitly:
+## Cosmos 3 step by step
+
+Cosmos uses two persistent services: the native SGLang model server on port `30000`, followed by the unified
+WorldOdyssey API on port `8000`. Run generation commands from a third terminal.
+
+### 1. Install once
+
+From the repository root:
 
 ```bash
-SGLANG_DISABLE_COSMOS3_GUARDRAILS=1 \
-bash scripts/serve_sglang_diffusion.sh nvidia/Cosmos3-Nano
+./install.sh
 ```
 
-Keep the normal WorldOdyssey backend running in another shell, then submit through its unified endpoint:
+Skip this step on later runs when `.venv` and `.venv_sglang` are already installed.
+
+### 2. Start the Cosmos model server
+
+In terminal 1:
 
 ```bash
+cd /path/to/WorldOdyssey_inference
 bash scripts/run_cosmos3.sh
 ```
 
-For a reduced local smoke request:
+Keep this process running. Initial checkpoint loading and warmup can take several minutes. In another terminal, check
+that the native endpoint is available:
 
 ```bash
-bash scripts/run_cosmos3.sh --no-guardrails --num-frames 5 --height 192 --width 320 --steps 1
+curl --fail http://127.0.0.1:30000/health
 ```
+
+The request may still queue briefly if the one-time warmup is finishing. The model-server log prints
+`The server is fired up and ready to roll!` when warmup is complete.
+
+### 3. Start the unified backend
+
+In terminal 2:
+
+```bash
+cd /path/to/WorldOdyssey_inference
+bash scripts/run_backend.sh
+```
+
+Keep this process running too. It connects to the Cosmos server at `http://127.0.0.1:30000` by default.
+
+### 4. Verify the unified backend
+
+In terminal 3:
+
+```bash
+curl --fail http://127.0.0.1:8000/health
+curl --fail http://127.0.0.1:8000/v1/video/providers | python -m json.tool
+```
+
+The health response should be `{"status":"ok"}`. The provider list should show `sglang` as enabled with both
+`text_to_video` and `image_to_video` modes.
+
+### 5. Generate from text
+
+Still in terminal 3:
+
+```bash
+bash scripts/generate_cosmos3.sh \
+  --prompt "A cinematic flight through a luminous nebula and distant galaxies." \
+  --output artifacts/backend-videos/cosmos-t2v.mp4
+```
+
+For a quick low-cost smoke test:
+
+```bash
+bash scripts/generate_cosmos3.sh \
+  --no-guardrails \
+  --num-frames 5 \
+  --height 192 \
+  --width 320 \
+  --steps 1 \
+  --output artifacts/backend-videos/cosmos-smoke.mp4
+```
+
+### 6. Generate from an image and text
+
+Pass your starting image to the example script:
+
+```bash
+COSMOS3_I2V_PROMPT="The planet rotates slowly as the camera flies toward its glowing rings." \
+COSMOS3_I2V_OUTPUT="artifacts/backend-videos/planet.mp4" \
+bash examples/generate_cosmos3_i2v.sh images/planet.png
+```
+
+Alternatively, call the underlying helper directly with `--image-path` or `--image-url`:
+
+```bash
+bash scripts/generate_cosmos3.sh \
+  --image-path images/planet.png \
+  --prompt "The camera moves slowly toward the planet." \
+  --output artifacts/backend-videos/planet.mp4
+```
+
+Omit both image options to use text-to-video. The generation helper submits the job, waits for completion, and
+downloads the finished MP4 to `--output`.
+
+### 7. Stop the services
+
+Press `Ctrl-C` in terminal 2 to stop the unified backend, then press `Ctrl-C` in terminal 1 to unload Cosmos. If the
+services run in tmux, send `Ctrl-C` to their panes instead.
+
+Generation defaults are exposed near the top of each generation shell script:
+
+| Script | Resolution | Frames / FPS | Duration | Steps | Guidance |
+| --- | --- | --- | --- | --- | --- |
+| `generate_cosmos3.sh` | 1280×720 | 81 / 24 | 3.375 s | 35 | 4.0 |
+| `generate_cosmos3_i2v.sh` | 1280×720 | 81 / 24 | 3.375 s | 35 | 4.0 |
+| `generate_fastwan_quality.sh` | 832×448 | 61 / 16 | 3.8125 s | 3 | Model default |
+
+Prefer frame counts in the `4n+1` family, such as 49, 61, or 81. Increase resolution or inference steps for quality;
+both also increase memory use and generation time. CLI flags placed after the script command override its defaults.
 
 See [Cosmos 3 setup](docs/cosmos3.md) for version pins and runtime overrides.
 
@@ -134,32 +249,25 @@ See [Cosmos 3 setup](docs/cosmos3.md) for version pins and runtime overrides.
 Start the native SGLang Diffusion server first. For the FastWan T2V VSA path:
 
 ```bash
-WORLDODYSSEY_SGLANG_NUM_GPUS=1 \
-bash scripts/serve_sglang_diffusion.sh FastVideo/FastWan2.1-T2V-1.3B-Diffusers \
-  --attention-backend video_sparse_attn \
-  --VSA-sparsity 0.5
+bash scripts/run_fastwan_t2v.sh
 ```
 
 For I2V, start a matching I2V workload and model:
 
 ```bash
-WORLDODYSSEY_SGLANG_WORKLOAD_TYPE=i2v \
-WORLDODYSSEY_SGLANG_OFFLOAD_PRESET=memory \
-WORLDODYSSEY_SGLANG_LOG_LEVEL=debug \
-WORLDODYSSEY_SGLANG_NUM_GPUS=1 \
-bash scripts/serve_sglang_diffusion.sh weizhou03/Wan2.1-Fun-1.3B-InP-Diffusers
+bash scripts/run_fastwan_i2v.sh
+```
+
+The low-memory Wan InP I2V profile is also available as:
+
+```bash
+bash scripts/run_wan_inp_i2v.sh
 ```
 
 For Hunyuan FP8, use the same native server launcher and pass the FP8 transformer override:
 
 ```bash
-WORLDODYSSEY_SGLANG_OFFLOAD_PRESET=memory \
-WORLDODYSSEY_SGLANG_LOG_LEVEL=debug \
-WORLDODYSSEY_SGLANG_NUM_GPUS=2 \
-WORLDODYSSEY_SGLANG_TP_SIZE=1 \
-WORLDODYSSEY_SGLANG_SP_DEGREE=2 \
-bash scripts/serve_sglang_diffusion.sh hunyuanvideo-community/HunyuanVideo \
-  --transformer-path lmsys/hunyuanvideo-modelopt-fp8-sglang-transformer
+bash scripts/run_hunyuan_fp8.sh
 ```
 
 ### Memory Offload
@@ -224,9 +332,7 @@ you started it in tmux.
 In a second shell, point the provider-neutral backend at the SGLang server:
 
 ```bash
-export WORLDODYSSEY_SGLANG_BASE_URL=http://127.0.0.1:30000
-source .venv/bin/activate
-python scripts/serve_video_backend.py --host 127.0.0.1 --port 8000
+bash scripts/run_backend.sh
 ```
 
 `WORLDODYSSEY_SGLANG_VIDEO_API_FORMAT` defaults to `multipart`, matching the unified native server launcher. Set it to
@@ -323,23 +429,17 @@ launcher as `--transformer-path`; request `model` stays as `hunyuanvideo-communi
 
 ## Run WorldOdyssey
 
-WorldOdyssey inputs are tracked as a git submodule at `submodule/worldodyssey`. The setup script initializes it; if the
-paths below are missing, run:
-
-```bash
-git submodule update --init --recursive submodule/worldodyssey
-```
-
-The imported example task lives at:
+WorldOdyssey inputs are normal local files and are not downloaded by setup. Place each task folder under `inputs/`, or
+pass any task directory explicitly to `scripts/submit_worldodyssey_task.py`. The default example path is:
 
 ```text
-submodule/worldodyssey/inputs/move_bookmark
+inputs/move_bookmark
 ```
 
 You can also pass the parent inputs directory:
 
 ```text
-submodule/worldodyssey/inputs
+inputs
 ```
 
 When the path contains child task folders, the submitter expands it into a `/v1/video/generation-batches` request.
@@ -412,7 +512,7 @@ Dry-run all available task folders under the imported `inputs/` root:
 ```bash
 source .venv/bin/activate
 python scripts/submit_worldodyssey_task.py \
-  submodule/worldodyssey/inputs \
+  inputs \
   --dry-run
 ```
 

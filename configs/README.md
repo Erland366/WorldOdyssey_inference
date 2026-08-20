@@ -24,12 +24,8 @@ python scripts/submit_worldodyssey_task.py --config configs/worldodyssey-move-bo
 Before submitting, the native SGLang server and the provider-neutral backend must already be running. The backend needs
 `WORLDODYSSEY_SGLANG_BASE_URL`; `WORLDODYSSEY_SGLANG_VIDEO_API_FORMAT` defaults to the unified native `multipart`
 server path. The backend forwards each config's `request.model` to SGLang and lets SGLang handle model compatibility.
-WorldOdyssey configs assume the `submodule/worldodyssey` git submodule has been initialized. `bash
-scripts/setup_video_backend.sh` does this during setup; for input-only work, run:
-
-```bash
-git submodule update --init --recursive submodule/worldodyssey
-```
+WorldOdyssey configs read normal local task folders from `inputs/`. Setup does not download task data; copy your
+WorldOdyssey-format task folders there or override `task` with an explicit path.
 
 Override any value from the command line with dotted paths:
 
@@ -75,7 +71,7 @@ Specific CLI flags such as `--height`, `--num-frames`, and `--dry-run` override 
 `scripts/submit_worldodyssey_task.py` accepts a parent directory such as:
 
 ```text
-submodule/worldodyssey/inputs
+inputs
 ```
 
 The submitter scans direct child folders with `task.json` and submits them as one
@@ -87,7 +83,7 @@ Dry-run the imported parent directory:
 ```bash
 source .venv/bin/activate
 python scripts/submit_worldodyssey_task.py \
-  submodule/worldodyssey/inputs \
+  inputs \
   --dry-run
 ```
 

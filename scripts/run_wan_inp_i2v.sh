@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+MODEL="${WAN_INP_MODEL:-weizhou03/Wan2.1-Fun-1.3B-InP-Diffusers}"
+
+export WORLDODYSSEY_SGLANG_WORKLOAD_TYPE="${WORLDODYSSEY_SGLANG_WORKLOAD_TYPE:-i2v}"
+export WORLDODYSSEY_SGLANG_OFFLOAD_PRESET="${WORLDODYSSEY_SGLANG_OFFLOAD_PRESET:-memory}"
+export WORLDODYSSEY_SGLANG_LOG_LEVEL="${WORLDODYSSEY_SGLANG_LOG_LEVEL:-debug}"
+export WORLDODYSSEY_SGLANG_NUM_GPUS="${WORLDODYSSEY_SGLANG_NUM_GPUS:-1}"
+
+exec bash "$ROOT_DIR/scripts/serve_sglang_diffusion.sh" "$MODEL" "$@"

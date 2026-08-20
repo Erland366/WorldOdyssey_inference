@@ -76,8 +76,8 @@ def make_task_dir(
     return task_dir
 
 
-def test_worldodyssey_default_task_dir_uses_submodule() -> None:
-    expected_suffix = Path("submodule/worldodyssey/inputs/move_bookmark")
+def test_worldodyssey_default_task_dir_uses_local_inputs() -> None:
+    expected_suffix = Path("inputs/move_bookmark")
 
     assert (
         DEFAULT_WORLDODYSSEY_TASK_DIR.parts[-len(expected_suffix.parts) :]

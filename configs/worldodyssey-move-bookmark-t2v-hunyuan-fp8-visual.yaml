@@ -1,4 +1,4 @@
-task: submodule/worldodyssey/inputs/move_bookmark
+task: inputs/move_bookmark
 backend_url: http://127.0.0.1:8000
 
 # Visual-inspection FP8 run.

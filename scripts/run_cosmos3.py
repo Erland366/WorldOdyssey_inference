@@ -15,7 +15,7 @@ TERMINAL_STATUSES = {"succeeded", "failed", "cancelled"}
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Submit Cosmos 3 to the WorldOdyssey unified video API."
+        description="Submit Cosmos 3 text-to-video or image-to-video to the WorldOdyssey unified video API."
     )
     parser.add_argument("--backend-url", default=os.environ.get("VIDEO_BACKEND_URL", "http://127.0.0.1:8000"))
     parser.add_argument("--model", default=os.environ.get("COSMOS3_MODEL", "nvidia/Cosmos3-Nano"))
@@ -25,6 +25,16 @@ def parse_args() -> argparse.Namespace:
         default=Path(os.environ.get("COSMOS3_OUTPUT", "artifacts/backend-videos/cosmos3-nano.mp4")),
     )
     parser.add_argument("--prompt", default="A mobile robot navigates a warehouse aisle and stops at a shelf.")
+    image_group = parser.add_mutually_exclusive_group()
+    image_group.add_argument(
+        "--image-path",
+        type=Path,
+        help="Local starting image. Supplying it switches the request to image-to-video.",
+    )
+    image_group.add_argument(
+        "--image-url",
+        help="HTTP(S) starting-image URL. Supplying it switches the request to image-to-video.",
+    )
     parser.add_argument("--negative-prompt", default="blurry, distorted, low quality")
     parser.add_argument("--height", type=int, default=720)
     parser.add_argument("--width", type=int, default=1280)
@@ -62,10 +72,11 @@ def open_json(request: Request, timeout: float) -> dict[str, object]:
 def main() -> int:
     args = parse_args()
     base_url = args.backend_url.rstrip("/")
+    mode = "image_to_video" if args.image_path is not None or args.image_url else "text_to_video"
     payload = {
         "provider": "sglang",
         "model": args.model,
-        "mode": "text_to_video",
+        "mode": mode,
         "prompt": args.prompt,
         "negative_prompt": args.negative_prompt,
         "options": {
@@ -87,8 +98,15 @@ def main() -> int:
                 },
             },
         },
-        "metadata": {"helper": "scripts/run_cosmos3.sh"},
+        "metadata": {"helper": "scripts/generate_cosmos3.sh"},
     }
+    if args.image_path is not None:
+        image_path = args.image_path.expanduser().resolve()
+        if not image_path.is_file():
+            raise SystemExit(f"Starting image does not exist or is not a file: {image_path}")
+        payload["image_path"] = str(image_path)
+    elif args.image_url:
+        payload["image_url"] = args.image_url
     if args.dry_run:
         print(json.dumps(payload, indent=2, sort_keys=True))
         return 0

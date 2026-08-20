@@ -82,7 +82,7 @@ def build_payload(args: argparse.Namespace) -> dict[str, object]:
             "seed": args.seed,
             "timeout_seconds": args.timeout_seconds,
         },
-        "metadata": {"helper": "scripts/run_fastwan_quality.sh"},
+        "metadata": {"helper": "scripts/generate_fastwan_quality.sh"},
     }
 
 

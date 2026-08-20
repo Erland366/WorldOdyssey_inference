@@ -4,7 +4,6 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT_DIR"
 
-INSTALL_SUBMODULE=1
 INSTALL_SGLANG=1
 
 usage() {
@@ -15,8 +14,7 @@ Usage:
   ./install.sh [options]
 
 Options:
-  --main-only       Install only the backend .venv (no submodule or GPU runtimes).
-  --skip-submodule  Do not initialize the WorldOdyssey input submodule.
+  --main-only       Install only the backend .venv (no GPU runtime).
   --skip-sglang     Do not create/update the isolated .venv_sglang runtime.
   -h, --help        Show this help message.
 
@@ -29,11 +27,7 @@ EOF
 while (($#)); do
     case "$1" in
         --main-only)
-            INSTALL_SUBMODULE=0
             INSTALL_SGLANG=0
-            ;;
-        --skip-submodule)
-            INSTALL_SUBMODULE=0
             ;;
         --skip-sglang)
             INSTALL_SGLANG=0
@@ -67,19 +61,11 @@ section() {
 }
 
 require_command uv
-if ((INSTALL_SUBMODULE)); then
-    require_command git
-fi
 
 section "Installing the main environment (.venv)"
 # GPU runtimes live in isolated environments below, so the backend environment
 # can exactly match uv.lock without preserving ABI-conflicting ML packages.
 uv sync
-
-if ((INSTALL_SUBMODULE)); then
-    section "Initializing the WorldOdyssey input submodule"
-    git submodule update --init --recursive submodule/worldodyssey
-fi
 
 if ((INSTALL_SGLANG)); then
     section "Installing the isolated SGLang Diffusion runtime (.venv_sglang)"
@@ -106,24 +92,18 @@ if ((INSTALL_SGLANG)); then
     cat <<'EOF'
 
 Start SGLang (GPU server):
-  WORLDODYSSEY_SGLANG_NUM_GPUS=1 \
-  bash scripts/serve_sglang_diffusion.sh FastVideo/FastWan2.1-T2V-1.3B-Diffusers \
-    --attention-backend video_sparse_attn \
-    --VSA-sparsity 0.5
+  bash scripts/run_fastwan_t2v.sh
 
 Then, in another shell, start the API backend:
-  export WORLDODYSSEY_SGLANG_BASE_URL=http://127.0.0.1:30000
-  source .venv/bin/activate
-  python scripts/serve_video_backend.py --host 127.0.0.1 --port 8000
+  bash scripts/run_backend.sh
 EOF
 fi
 
 cat <<'EOF'
 
 To serve Cosmos 3 through the same API, restart the SGLang model server with:
-  SGLANG_DISABLE_COSMOS3_GUARDRAILS=1 \
-  bash scripts/serve_sglang_diffusion.sh nvidia/Cosmos3-Nano
+  bash scripts/run_cosmos3.sh
 
 Then submit a Cosmos job through the unified backend:
-  bash scripts/run_cosmos3.sh
+  bash scripts/generate_cosmos3.sh
 EOF
