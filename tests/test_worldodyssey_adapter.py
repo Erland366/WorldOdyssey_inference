@@ -13,6 +13,7 @@ from worldodyssey_inference.video_backend.providers import (
     DEBUG_TINY_WAN_T2V_MODEL,
     DEFAULT_SGLANG_I2V_MODEL,
     DEFAULT_SGLANG_MODEL,
+    MINIMAX_H3_MODEL,
 )
 from worldodyssey_inference.video_backend.worldodyssey import (
     DEFAULT_WORLDODYSSEY_TASK_DIR,
@@ -167,6 +168,23 @@ def test_worldodyssey_request_can_attach_main_image_for_future_providers(tmp_pat
     assert request.options.num_inference_steps is None
     assert request.options.attention_backend is None
     assert request.options.vsa_sparsity is None
+
+
+def test_worldodyssey_minimax_h3_request_does_not_inject_wan_dimensions(tmp_path: Path) -> None:
+    loaded_task = load_worldodyssey_task(make_task_dir(tmp_path))
+
+    request = build_worldodyssey_generation_request(
+        loaded_task,
+        model=MINIMAX_H3_MODEL,
+        mode=VideoMode.IMAGE_TO_VIDEO,
+        include_main_image_base64=True,
+    )
+
+    assert request.model == MINIMAX_H3_MODEL
+    assert request.image_base64 == base64.b64encode(b"main-frame").decode("ascii")
+    assert request.options.height is None
+    assert request.options.width is None
+    assert request.options.num_frames is None
 
 
 def test_worldodyssey_cli_keeps_mode_specific_defaults_unset(monkeypatch: pytest.MonkeyPatch) -> None:

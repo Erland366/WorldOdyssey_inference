@@ -1,0 +1,30 @@
+task: inputs
+backend_url: http://127.0.0.1:8000
+
+adapter:
+  i2v: true
+
+request:
+  provider: sglang
+  model: MiniMaxAI/MiniMax-H3
+  mode: image_to_video
+  options:
+    duration: 10
+    aspect_ratio: "16:9"
+    fps: 24
+    num_inference_steps: 50
+    generate_audio: true
+    timeout_seconds: 3600
+    provider_options:
+      minimax_h3:
+        short_edge: 768
+        frame_index: 0
+        flow_shift: 12.0
+        audio_flow_shift: 3.0
+
+run:
+  dry_run: false
+  wait: true
+  poll_interval_seconds: 5
+  wait_timeout_seconds: 3600
+  download_dir: artifacts/video-backend/minimax-h3-fl2va-inputs

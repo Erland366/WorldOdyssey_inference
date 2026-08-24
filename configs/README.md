@@ -13,6 +13,9 @@ These YAML files drive the local video backend submitters:
 - `worldodyssey-inputs-batch-t2v-wan-InP.yaml`: WorldOdyssey parent `inputs/` batch in I2V mode with
   `weizhou03/Wan2.1-Fun-1.3B-InP-Diffusers` and low-memory five-frame smoke dimensions.
 - `tiny-wan-batch.yaml`: provider-neutral batch request using `Erland/tiny-wan2.1-t2v-debug`.
+- `worldodyssey-move-bookmark-i2v-minimax-h3-fl2va.yaml`: primary MiniMax-H3 text plus first-frame request.
+- `worldodyssey-move-bookmark-i2v-minimax-h3-ref2va.yaml`: MiniMax-H3 semantic image-reference request.
+- `worldodyssey-inputs-batch-i2v-minimax-h3-{fl2va,ref2va}.yaml`: corresponding parent-input batches.
 
 Run one directly:
 
@@ -63,6 +66,10 @@ python scripts/submit_worldodyssey_task.py \
 
 The local SGLang provider accepts exactly one image input: `request.image_path`, `request.image_url`, or
 `request.image_base64`.
+
+For MiniMax-H3, `image_to_video` maps that image to FL2VA frame index `0` by default. Use `reference_to_video` to map
+the same image to Ref2VA semantic-reference conditioning. H3 accepts 4–15 second requests at 24 FPS and always emits
+synchronized audio. See `docs/minimax-h3.md` for routing and H3-specific request controls.
 
 Specific CLI flags such as `--height`, `--num-frames`, and `--dry-run` override the YAML. `--set` is applied last.
 

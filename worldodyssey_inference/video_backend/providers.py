@@ -39,6 +39,33 @@ DEFAULT_SGLANG_SERVER_URL = "http://127.0.0.1:30000"
 SGLANG_SERVER_URL_ENV = "WORLDODYSSEY_SGLANG_BASE_URL"
 SGLANG_SERVER_MODEL_ENV = "WORLDODYSSEY_SGLANG_MODEL"
 SGLANG_SERVER_VIDEO_API_FORMAT_ENV = "WORLDODYSSEY_SGLANG_VIDEO_API_FORMAT"
+MINIMAX_H3_MODEL = "MiniMaxAI/MiniMax-H3"
+MINIMAX_H3_FL2VA_SERVER_URL_ENV = "WORLDODYSSEY_MINIMAX_H3_FL2VA_BASE_URL"
+MINIMAX_H3_REF2VA_SERVER_URL_ENV = "WORLDODYSSEY_MINIMAX_H3_REF2VA_BASE_URL"
+DEFAULT_MINIMAX_H3_FL2VA_SERVER_URL = "http://127.0.0.1:30010"
+DEFAULT_MINIMAX_H3_REF2VA_SERVER_URL = "http://127.0.0.1:30011"
+MINIMAX_H3_PROVIDER_OPTIONS_KEY = "minimax_h3"
+MINIMAX_H3_PROVIDER_OPTION_KEYS = frozenset(
+    {
+        "audio_flow_shift",
+        "flow_shift",
+        "frame_index",
+        "num_outputs_per_prompt",
+        "quality",
+        "short_edge",
+    }
+)
+MINIMAX_H3_FPS = 24
+MINIMAX_H3_DEFAULT_DURATION_SECONDS = 5
+MINIMAX_H3_MIN_DURATION_SECONDS = 4
+MINIMAX_H3_MAX_DURATION_SECONDS = 15
+MINIMAX_H3_DEFAULT_SHORT_EDGE = 768
+MINIMAX_H3_DEFAULT_INFERENCE_STEPS = 50
+MINIMAX_H3_DEFAULT_FLOW_SHIFT = 12.0
+MINIMAX_H3_DEFAULT_AUDIO_FLOW_SHIFT = 3.0
+MINIMAX_H3_ASPECT_RATIOS = frozenset(
+    {"auto", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16"}
+)
 SGLANG_VIDEO_API_FORMAT_JSON = "json"
 SGLANG_VIDEO_API_FORMAT_MULTIPART = "multipart"
 DEFAULT_SGLANG_VIDEO_API_FORMAT = SGLANG_VIDEO_API_FORMAT_MULTIPART
@@ -118,12 +145,26 @@ class LocalSGLangProvider:
         server_url: str | None = None,
         server_model: str | None = None,
         server_api_format: str | None = None,
+        minimax_h3_fl2va_server_url: str | None = None,
+        minimax_h3_ref2va_server_url: str | None = None,
+        minimax_h3_venv_path: Path | None = None,
     ) -> None:
         self.repo_root = repo_root
         self.venv_path = venv_path or repo_root / ".venv_sglang"
         self.cuda_home = self.venv_path / "lib" / "python3.12" / "site-packages" / "nvidia"
         self.server_url = (server_url or os.environ.get(SGLANG_SERVER_URL_ENV) or DEFAULT_SGLANG_SERVER_URL).rstrip("/")
         self.server_model = server_model or os.environ.get(SGLANG_SERVER_MODEL_ENV)
+        self.minimax_h3_venv_path = minimax_h3_venv_path or repo_root / ".venv_sglang_h3"
+        self.minimax_h3_fl2va_server_url = (
+            minimax_h3_fl2va_server_url
+            or os.environ.get(MINIMAX_H3_FL2VA_SERVER_URL_ENV)
+            or DEFAULT_MINIMAX_H3_FL2VA_SERVER_URL
+        ).rstrip("/")
+        self.minimax_h3_ref2va_server_url = (
+            minimax_h3_ref2va_server_url
+            or os.environ.get(MINIMAX_H3_REF2VA_SERVER_URL_ENV)
+            or DEFAULT_MINIMAX_H3_REF2VA_SERVER_URL
+        ).rstrip("/")
         self.server_api_format = self._normalize_server_api_format(
             server_api_format
             or os.environ.get(SGLANG_SERVER_VIDEO_API_FORMAT_ENV)
@@ -135,11 +176,12 @@ class LocalSGLangProvider:
             enabled=True,
             local=True,
             models=[],
-            modes=[VideoMode.TEXT_TO_VIDEO, VideoMode.IMAGE_TO_VIDEO],
-            supports_audio=self.server_api_format == SGLANG_VIDEO_API_FORMAT_MULTIPART,
-            supports_seed=self.server_api_format == SGLANG_VIDEO_API_FORMAT_MULTIPART,
+            modes=[VideoMode.TEXT_TO_VIDEO, VideoMode.IMAGE_TO_VIDEO, VideoMode.REFERENCE_TO_VIDEO],
+            supports_audio=True,
+            supports_seed=True,
             supports_custom_resolution=True,
-            supports_reference_images=False,
+            supports_reference_images=True,
+            supports_end_image=True,
             resolutions=["custom"],
             setup={
                 "venv": str(self.venv_path),
@@ -157,10 +199,19 @@ class LocalSGLangProvider:
                 "default_text_to_video_model": DEFAULT_SGLANG_MODEL,
                 "default_image_to_video_model": DEFAULT_SGLANG_I2V_MODEL,
                 "tiny_debug_model": DEBUG_TINY_WAN_T2V_MODEL,
+                "minimax_h3_model": MINIMAX_H3_MODEL,
+                "minimax_h3_fl2va_server_url": self.minimax_h3_fl2va_server_url,
+                "minimax_h3_ref2va_server_url": self.minimax_h3_ref2va_server_url,
+                "minimax_h3_fl2va_server_url_env": MINIMAX_H3_FL2VA_SERVER_URL_ENV,
+                "minimax_h3_ref2va_server_url_env": MINIMAX_H3_REF2VA_SERVER_URL_ENV,
             },
         )
 
     def validate_request(self, request: VideoGenerationRequest) -> None:
+        if self._is_minimax_h3_request(request):
+            self._validate_minimax_h3_request(request)
+            self._validate_runtime_paths(self.minimax_h3_venv_path)
+            return
         if request.mode == VideoMode.TEXT_TO_VIDEO:
             self._validate_t2v_request(request)
         elif request.mode == VideoMode.IMAGE_TO_VIDEO:
@@ -169,6 +220,102 @@ class LocalSGLangProvider:
             raise UnsupportedRequestError("Local SGLang currently supports text_to_video and image_to_video only.")
         self._validate_native_server_request_options(request)
         self._validate_runtime_paths()
+
+    def _validate_minimax_h3_request(self, request: VideoGenerationRequest) -> None:
+        if request.mode not in {
+            VideoMode.TEXT_TO_VIDEO,
+            VideoMode.IMAGE_TO_VIDEO,
+            VideoMode.REFERENCE_TO_VIDEO,
+        }:
+            raise UnsupportedRequestError(
+                "MiniMax-H3 supports text_to_video, image_to_video, and reference_to_video."
+            )
+        if request.negative_prompt is not None:
+            raise UnsupportedRequestError("MiniMax-H3 does not accept negative_prompt.")
+        if request.video_url:
+            raise UnsupportedRequestError(
+                "This MiniMax-H3 integration currently supports text and image conditions only."
+            )
+        if request.options.guidance_scale is not None:
+            raise UnsupportedRequestError(
+                "MiniMax-H3 uses a CFG-distilled checkpoint and does not accept guidance_scale."
+            )
+        if request.options.generate_audio is False:
+            raise UnsupportedRequestError(
+                "MiniMax-H3 jointly generates video and audio; generate_audio cannot be false."
+            )
+        if request.options.fps is not None and request.options.fps != MINIMAX_H3_FPS:
+            raise UnsupportedRequestError(f"MiniMax-H3 supports {MINIMAX_H3_FPS} FPS only.")
+        if (
+            request.options.width is not None
+            or request.options.height is not None
+            or request.options.resolution is not None
+        ):
+            raise UnsupportedRequestError(
+                "MiniMax-H3 uses a fixed 768-pixel short edge; set aspect_ratio "
+                "instead of width, height, or resolution."
+            )
+        aspect_ratio = request.options.aspect_ratio or "auto"
+        if aspect_ratio not in MINIMAX_H3_ASPECT_RATIOS:
+            raise UnsupportedRequestError(
+                f"Unsupported MiniMax-H3 aspect_ratio {aspect_ratio!r}."
+            )
+        if request.options.num_gpus != 1:
+            raise UnsupportedRequestError(
+                "options.num_gpus is a server-launch setting for MiniMax-H3, not a request field."
+            )
+        if request.options.attention_backend is not None or request.options.vsa_sparsity is not None:
+            raise UnsupportedRequestError(
+                "MiniMax-H3 attention configuration belongs on the model-server launcher."
+            )
+
+        duration = self._minimax_h3_duration_seconds(request)
+        if not MINIMAX_H3_MIN_DURATION_SECONDS <= duration <= MINIMAX_H3_MAX_DURATION_SECONDS:
+            raise UnsupportedRequestError(
+                "MiniMax-H3 duration must be between "
+                f"{MINIMAX_H3_MIN_DURATION_SECONDS} and {MINIMAX_H3_MAX_DURATION_SECONDS} seconds."
+            )
+
+        primary_count = sum(
+            bool(value)
+            for value in (
+                request.image_path,
+                request.image_url,
+                request.image_base64,
+            )
+        )
+        if primary_count > 1:
+            raise UnsupportedRequestError(
+                "MiniMax-H3 accepts at most one of image_path, image_url, or image_base64 as the primary image."
+            )
+        if request.mode == VideoMode.TEXT_TO_VIDEO:
+            if primary_count or request.end_image_url or request.reference_image_urls:
+                raise UnsupportedRequestError("MiniMax-H3 text_to_video accepts a text prompt only.")
+        elif request.mode == VideoMode.IMAGE_TO_VIDEO:
+            if primary_count != 1:
+                raise UnsupportedRequestError(
+                    "MiniMax-H3 image_to_video requires exactly one primary image."
+                )
+            if request.reference_image_urls:
+                raise UnsupportedRequestError(
+                    "Use reference_to_video for MiniMax-H3 semantic reference images."
+                )
+            if aspect_ratio != "auto":
+                raise UnsupportedRequestError(
+                    "MiniMax-H3 FL2VA requires aspect_ratio='auto' so keyframe geometry is preserved."
+                )
+        else:
+            if request.end_image_url:
+                raise UnsupportedRequestError(
+                    "MiniMax-H3 reference_to_video does not accept an endpoint image."
+                )
+            reference_count = primary_count + len(request.reference_image_urls)
+            if not 1 <= reference_count <= 9:
+                raise UnsupportedRequestError(
+                    "MiniMax-H3 reference_to_video requires between one and nine reference images."
+                )
+
+        self._validate_minimax_h3_provider_options(request.options.provider_options)
 
     def _validate_t2v_request(self, request: VideoGenerationRequest) -> None:
         if request.image_path or request.image_url or request.image_base64 or request.end_image_url or request.reference_image_urls:
@@ -244,12 +391,176 @@ class LocalSGLangProvider:
         if self.server_api_format == SGLANG_VIDEO_API_FORMAT_MULTIPART:
             self._validate_multipart_provider_options(options.provider_options)
 
+    @staticmethod
+    def _validate_minimax_h3_provider_options(provider_options: dict[str, Any]) -> None:
+        unknown_containers = sorted(set(provider_options) - {MINIMAX_H3_PROVIDER_OPTIONS_KEY})
+        if unknown_containers:
+            joined = ", ".join(f"options.provider_options.{key}" for key in unknown_containers)
+            raise UnsupportedRequestError(
+                f"MiniMax-H3 provider options must be nested under {MINIMAX_H3_PROVIDER_OPTIONS_KEY!r}. "
+                f"Unsupported: {joined}."
+            )
+        options = provider_options.get(MINIMAX_H3_PROVIDER_OPTIONS_KEY, {})
+        if not isinstance(options, dict):
+            raise UnsupportedRequestError(
+                f"options.provider_options.{MINIMAX_H3_PROVIDER_OPTIONS_KEY} must be an object."
+            )
+        unknown_keys = sorted(set(options) - MINIMAX_H3_PROVIDER_OPTION_KEYS)
+        if unknown_keys:
+            joined = ", ".join(
+                f"options.provider_options.{MINIMAX_H3_PROVIDER_OPTIONS_KEY}.{key}"
+                for key in unknown_keys
+            )
+            raise UnsupportedRequestError(f"Unsupported MiniMax-H3 request options: {joined}.")
+
+        frame_index = options.get("frame_index", 0)
+        if frame_index not in {0, -1} or isinstance(frame_index, bool):
+            raise UnsupportedRequestError("MiniMax-H3 frame_index must be 0 (first) or -1 (last).")
+        for name in ("short_edge", "num_outputs_per_prompt"):
+            value = options.get(name)
+            if value is not None and (
+                not isinstance(value, int) or isinstance(value, bool) or value < 1
+            ):
+                raise UnsupportedRequestError(f"MiniMax-H3 {name} must be a positive integer.")
+        if options.get("short_edge", MINIMAX_H3_DEFAULT_SHORT_EDGE) != MINIMAX_H3_DEFAULT_SHORT_EDGE:
+            raise UnsupportedRequestError(
+                f"MiniMax-H3 short_edge must be {MINIMAX_H3_DEFAULT_SHORT_EDGE}."
+            )
+        for name in ("flow_shift", "audio_flow_shift"):
+            value = options.get(name)
+            if value is not None and (
+                not isinstance(value, int | float) or isinstance(value, bool) or value <= 0
+            ):
+                raise UnsupportedRequestError(f"MiniMax-H3 {name} must be a positive number.")
+        quality = options.get("quality")
+        if quality is not None and quality not in {"lossless", "high"}:
+            raise UnsupportedRequestError("MiniMax-H3 quality must be 'lossless' or 'high'.")
+
+    @staticmethod
+    def _is_minimax_h3_request(request: VideoGenerationRequest) -> bool:
+        return request.model.rstrip("/").rsplit("/", maxsplit=1)[-1].lower() == "minimax-h3"
+
+    @staticmethod
+    def _minimax_h3_task(request: VideoGenerationRequest) -> str:
+        if request.mode == VideoMode.TEXT_TO_VIDEO:
+            return "t2va"
+        if request.mode == VideoMode.IMAGE_TO_VIDEO:
+            return "fl2va"
+        return "ref2va"
+
+    @staticmethod
+    def _minimax_h3_duration_seconds(request: VideoGenerationRequest) -> float:
+        options = request.options
+        if options.duration is not None:
+            return float(options.duration)
+        if options.num_frames is not None:
+            fps = options.fps or MINIMAX_H3_FPS
+            return options.num_frames / fps
+        return float(MINIMAX_H3_DEFAULT_DURATION_SECONDS)
+
+    def _build_minimax_h3_payload(
+        self,
+        request: VideoGenerationRequest,
+        *,
+        image_path: Path | None,
+        end_image_path: Path | None,
+        reference_image_paths: list[Path],
+    ) -> dict[str, Any]:
+        options = request.options
+        h3_options = options.provider_options.get(MINIMAX_H3_PROVIDER_OPTIONS_KEY, {})
+        task = self._minimax_h3_task(request)
+        duration = self._minimax_h3_duration_seconds(request)
+        conditions: list[dict[str, Any]] = []
+
+        if task == "fl2va":
+            frame_index = int(h3_options.get("frame_index", 0))
+            if image_path is not None:
+                conditions.append(
+                    {
+                        "type": "image",
+                        "uri": image_path.resolve().as_uri(),
+                        "role": "keyframe",
+                        "frame_index": frame_index,
+                    }
+                )
+            if end_image_path is not None:
+                if frame_index == -1:
+                    raise UnsupportedRequestError(
+                        "A last-frame primary image cannot be combined with end_image_url."
+                    )
+                conditions.append(
+                    {
+                        "type": "image",
+                        "uri": end_image_path.resolve().as_uri(),
+                        "role": "keyframe",
+                        "frame_index": -1,
+                    }
+                )
+        elif task == "ref2va":
+            all_references = ([image_path] if image_path is not None else []) + reference_image_paths
+            conditions.extend(
+                {
+                    "type": "image",
+                    "uri": path.resolve().as_uri(),
+                    "role": "reference",
+                }
+                for path in all_references
+            )
+
+        aspect_ratio = options.aspect_ratio or "auto"
+        short_edge = int(h3_options.get("short_edge", MINIMAX_H3_DEFAULT_SHORT_EDGE))
+
+        payload: dict[str, Any] = {
+            "model": request.model,
+            "prompt": request.prompt,
+            "seconds": duration,
+            "task": task,
+            "conditions": conditions,
+            "target": {
+                "short_edge": short_edge,
+                "aspect_ratio": aspect_ratio,
+                "duration_seconds": duration,
+            },
+            "num_outputs_per_prompt": int(h3_options.get("num_outputs_per_prompt", 1)),
+            "num_inference_steps": options.num_inference_steps or MINIMAX_H3_DEFAULT_INFERENCE_STEPS,
+            "flow_shift": float(h3_options.get("flow_shift", MINIMAX_H3_DEFAULT_FLOW_SHIFT)),
+            "audio_flow_shift": float(
+                h3_options.get("audio_flow_shift", MINIMAX_H3_DEFAULT_AUDIO_FLOW_SHIFT)
+            ),
+        }
+        if options.seed is not None:
+            payload["seed"] = options.seed
+        if "quality" in h3_options:
+            payload["quality"] = h3_options["quality"]
+        return payload
+
+    def _request_api_format(self, request: VideoGenerationRequest) -> str:
+        if self._is_minimax_h3_request(request):
+            return SGLANG_VIDEO_API_FORMAT_JSON
+        return self.server_api_format
+
+    def _server_url_for_request(self, request: VideoGenerationRequest) -> str:
+        if not self._is_minimax_h3_request(request):
+            return self.server_url
+        if self._minimax_h3_task(request) == "ref2va":
+            return self.minimax_h3_ref2va_server_url
+        return self.minimax_h3_fl2va_server_url
+
     def build_server_payload(
         self,
         request: VideoGenerationRequest,
         *,
         image_path: Path | None = None,
+        end_image_path: Path | None = None,
+        reference_image_paths: list[Path] | None = None,
     ) -> dict[str, Any]:
+        if self._is_minimax_h3_request(request):
+            return self._build_minimax_h3_payload(
+                request,
+                image_path=image_path,
+                end_image_path=end_image_path,
+                reference_image_paths=reference_image_paths or [],
+            )
         options = request.options
         is_i2v = request.mode == VideoMode.IMAGE_TO_VIDEO
         height = options.height or (DEFAULT_SGLANG_I2V_HEIGHT if is_i2v else DEFAULT_SGLANG_HEIGHT)
@@ -288,36 +599,65 @@ class LocalSGLangProvider:
         self.validate_request(request)
         paths.output_path.parent.mkdir(parents=True, exist_ok=True)
         paths.log_path.parent.mkdir(parents=True, exist_ok=True)
-        image_path = self._stage_i2v_image(request, paths) if request.mode == VideoMode.IMAGE_TO_VIDEO else None
-        payload = self.build_server_payload(request, image_path=image_path)
+        image_path: Path | None = None
+        end_image_path: Path | None = None
+        reference_image_paths: list[Path] = []
+        if self._is_minimax_h3_request(request):
+            image_path, end_image_path, reference_image_paths = self._stage_minimax_h3_images(request, paths)
+        elif request.mode == VideoMode.IMAGE_TO_VIDEO:
+            image_path = self._stage_i2v_image(request, paths)
+        payload = self.build_server_payload(
+            request,
+            image_path=image_path,
+            end_image_path=end_image_path,
+            reference_image_paths=reference_image_paths,
+        )
+        api_format = self._request_api_format(request)
+        server_url = self._server_url_for_request(request)
         files: dict[str, Path] = {}
-        if self.server_api_format == SGLANG_VIDEO_API_FORMAT_MULTIPART and image_path is not None:
+        if api_format == SGLANG_VIDEO_API_FORMAT_MULTIPART and image_path is not None:
             payload.pop("input_reference", None)
             files["input_reference"] = image_path
 
         started = time.perf_counter()
         with paths.log_path.open("w", encoding="utf-8") as log_handle:
-            log_handle.write(f"SGLang server: {self.server_url}\n")
-            log_handle.write(f"POST /v1/videos ({self.server_api_format})\n")
+            log_handle.write(f"SGLang server: {server_url}\n")
+            log_handle.write(f"POST /v1/videos ({api_format})\n")
             log_handle.write(json.dumps(payload, indent=2, sort_keys=True) + "\n\n")
             if files:
                 log_handle.write("Multipart files:\n")
                 log_handle.write(json.dumps({field: str(path) for field, path in files.items()}, indent=2) + "\n\n")
             log_handle.flush()
 
-            created = self._post_video_create(payload, files=files, timeout=request.options.timeout_seconds)
+            created = self._post_video_create(
+                payload,
+                files=files,
+                timeout=request.options.timeout_seconds,
+                api_format=api_format,
+                server_url=server_url,
+            )
             log_handle.write("Create response:\n")
             log_handle.write(json.dumps(created, indent=2, sort_keys=True) + "\n\n")
             log_handle.flush()
 
             video_id = self._require_string(created, "id")
-            completed = self._wait_for_video(video_id, request.options.timeout_seconds, log_handle)
+            completed = self._wait_for_video(
+                video_id,
+                request.options.timeout_seconds,
+                log_handle,
+                server_url=server_url,
+            )
             status = self._require_string(completed, "status")
             if status != "completed":
                 error = completed.get("error")
                 raise ProviderRuntimeError(f"SGLang video job {video_id} finished with status {status!r}: {error}")
 
-            self._download_video(video_id, paths.output_path, timeout=request.options.timeout_seconds)
+            self._download_video(
+                video_id,
+                paths.output_path,
+                timeout=request.options.timeout_seconds,
+                server_url=server_url,
+            )
             log_handle.write(f"Downloaded /v1/videos/{video_id}/content to {paths.output_path}\n")
 
         elapsed = time.perf_counter() - started
@@ -327,28 +667,42 @@ class LocalSGLangProvider:
             metrics={
                 "elapsed_seconds": round(elapsed, 4),
                 "sglang_video_id": video_id,
-                "sglang_server_url": self.server_url,
-                "sglang_video_api_format": self.server_api_format,
+                "sglang_server_url": server_url,
+                "sglang_video_api_format": api_format,
             },
         )
 
-    def _validate_runtime_paths(self) -> None:
-        sglang_bin = self.venv_path / "bin" / "sglang"
-        libcudart = self.cuda_home / "cuda_runtime" / "lib" / "libcudart.so.12"
+    def _validate_runtime_paths(self, venv_path: Path | None = None) -> None:
+        selected_venv = venv_path or self.venv_path
+        sglang_bin = selected_venv / "bin" / "sglang"
+        cuda_runtime_root = selected_venv / "lib" / "python3.12" / "site-packages" / "nvidia"
+        libcudart_candidates = (
+            cuda_runtime_root / "cuda_runtime" / "lib" / "libcudart.so.12",
+            cuda_runtime_root / "cuda_runtime" / "lib" / "libcudart.so.13",
+            cuda_runtime_root / "cuda_runtime" / "lib" / "libcudart.so.13.0",
+            cuda_runtime_root / "cu13" / "lib" / "libcudart.so.13",
+        )
         if not sglang_bin.exists():
             raise ProviderUnavailableError(
                 f"SGLang CLI not found at {sglang_bin}. Run scripts/install_sglang_diffusion.sh."
             )
-        if not libcudart.exists():
+        if not any(path.exists() for path in libcudart_candidates):
             raise ProviderUnavailableError(
-                f"CUDA runtime not found at {libcudart}. Run scripts/install_sglang_diffusion.sh."
+                f"CUDA runtime not found under {cuda_runtime_root}. Run the matching SGLang installer."
             )
 
-    def _wait_for_video(self, video_id: str, timeout_seconds: int, log_handle) -> dict[str, Any]:
+    def _wait_for_video(
+        self,
+        video_id: str,
+        timeout_seconds: int,
+        log_handle,
+        *,
+        server_url: str,
+    ) -> dict[str, Any]:
         deadline = time.monotonic() + timeout_seconds
         path = f"/v1/videos/{quote(video_id, safe='')}"
         while True:
-            status_payload = self._get_json(path, timeout=timeout_seconds)
+            status_payload = self._get_json(path, timeout=timeout_seconds, server_url=server_url)
             status = self._require_string(status_payload, "status")
             log_handle.write(f"Poll {video_id}: {status}\n")
             log_handle.flush()
@@ -366,15 +720,26 @@ class LocalSGLangProvider:
         *,
         files: dict[str, Path],
         timeout: int,
+        api_format: str,
+        server_url: str,
     ) -> dict[str, Any]:
-        if self.server_api_format == SGLANG_VIDEO_API_FORMAT_MULTIPART:
-            return self._post_multipart("/v1/videos", payload, files=files, timeout=timeout)
-        return self._post_json("/v1/videos", payload, timeout=timeout)
+        if api_format == SGLANG_VIDEO_API_FORMAT_MULTIPART:
+            return self._post_multipart(
+                "/v1/videos", payload, files=files, timeout=timeout, server_url=server_url
+            )
+        return self._post_json("/v1/videos", payload, timeout=timeout, server_url=server_url)
 
-    def _post_json(self, path: str, payload: dict[str, Any], *, timeout: int) -> dict[str, Any]:
+    def _post_json(
+        self,
+        path: str,
+        payload: dict[str, Any],
+        *,
+        timeout: int,
+        server_url: str,
+    ) -> dict[str, Any]:
         body = json.dumps(payload).encode("utf-8")
         request = Request(
-            self._url(path),
+            self._url(path, server_url=server_url),
             data=body,
             headers={"Content-Type": "application/json"},
             method="POST",
@@ -388,6 +753,7 @@ class LocalSGLangProvider:
         *,
         files: dict[str, Path],
         timeout: int,
+        server_url: str,
     ) -> dict[str, Any]:
         boundary = f"----WorldOdyssey{uuid.uuid4().hex}"
         body = bytearray()
@@ -412,7 +778,7 @@ class LocalSGLangProvider:
 
         body.extend(f"--{boundary}--\r\n".encode("utf-8"))
         request = Request(
-            self._url(path),
+            self._url(path, server_url=server_url),
             data=bytes(body),
             headers={
                 "Content-Type": f"multipart/form-data; boundary={boundary}",
@@ -422,8 +788,8 @@ class LocalSGLangProvider:
         )
         return self._open_json(request, timeout=timeout)
 
-    def _get_json(self, path: str, *, timeout: int) -> dict[str, Any]:
-        request = Request(self._url(path), method="GET")
+    def _get_json(self, path: str, *, timeout: int, server_url: str) -> dict[str, Any]:
+        request = Request(self._url(path, server_url=server_url), method="GET")
         return self._open_json(request, timeout=timeout)
 
     def _open_json(self, request: Request, *, timeout: int) -> dict[str, Any]:
@@ -435,7 +801,7 @@ class LocalSGLangProvider:
             raise ProviderRuntimeError(f"SGLang server returned HTTP {exc.code} for {request.full_url}: {detail}") from exc
         except URLError as exc:
             raise ProviderUnavailableError(
-                f"SGLang server is not reachable at {self.server_url}. Start scripts/serve_sglang_diffusion.sh first: {exc}"
+                f"SGLang server is not reachable at {request.full_url}: {exc}"
             ) from exc
 
         try:
@@ -446,9 +812,16 @@ class LocalSGLangProvider:
             raise ProviderRuntimeError(f"SGLang server returned non-object JSON for {request.full_url}.")
         return decoded
 
-    def _download_video(self, video_id: str, output_path: Path, *, timeout: int) -> None:
+    def _download_video(
+        self,
+        video_id: str,
+        output_path: Path,
+        *,
+        timeout: int,
+        server_url: str,
+    ) -> None:
         path = f"/v1/videos/{quote(video_id, safe='')}/content"
-        request = Request(self._url(path), method="GET")
+        request = Request(self._url(path, server_url=server_url), method="GET")
         try:
             with urlopen(request, timeout=timeout) as response, output_path.open("wb") as handle:
                 shutil.copyfileobj(response, handle)
@@ -456,10 +829,11 @@ class LocalSGLangProvider:
             detail = exc.read().decode("utf-8", errors="replace")
             raise ProviderRuntimeError(f"SGLang server returned HTTP {exc.code} for {request.full_url}: {detail}") from exc
         except URLError as exc:
-            raise ProviderUnavailableError(f"SGLang server is not reachable at {self.server_url}: {exc}") from exc
+            raise ProviderUnavailableError(f"SGLang server is not reachable at {server_url}: {exc}") from exc
 
-    def _url(self, path: str) -> str:
-        return f"{self.server_url}/{path.lstrip('/')}"
+    def _url(self, path: str, *, server_url: str | None = None) -> str:
+        base_url = server_url or self.server_url
+        return f"{base_url}/{path.lstrip('/')}"
 
     @staticmethod
     def _require_string(payload: dict[str, Any], field: str) -> str:
@@ -573,15 +947,39 @@ class LocalSGLangProvider:
             return self._stage_i2v_base64(request.image_base64, paths)
         raise UnsupportedRequestError("Local SGLang image_to_video requires an image input.")
 
+    def _stage_minimax_h3_images(
+        self,
+        request: VideoGenerationRequest,
+        paths: JobPaths,
+    ) -> tuple[Path | None, Path | None, list[Path]]:
+        paths.job_dir.mkdir(parents=True, exist_ok=True)
+        primary_path: Path | None = None
+        if request.image_path or request.image_url or request.image_base64:
+            primary_path = self._stage_i2v_image(request, paths)
+        end_path = (
+            self._stage_image_url(request.end_image_url, paths, stem="end_image")
+            if request.end_image_url
+            else None
+        )
+        reference_paths = [
+            self._stage_image_url(url, paths, stem=f"reference_image_{index}")
+            for index, url in enumerate(request.reference_image_urls, start=1)
+        ]
+        return primary_path, end_path, reference_paths
+
     @staticmethod
     def _stage_i2v_url(image_url: str, paths: JobPaths) -> Path:
+        return LocalSGLangProvider._stage_image_url(image_url, paths, stem="input_image")
+
+    @staticmethod
+    def _stage_image_url(image_url: str, paths: JobPaths, *, stem: str) -> Path:
         parsed = urlparse(image_url)
         if parsed.scheme not in {"http", "https"}:
             raise UnsupportedRequestError("image_url must use http or https.")
         suffix = Path(parsed.path).suffix
         if suffix.lower() not in {".jpg", ".jpeg", ".png", ".webp"}:
             suffix = ".png"
-        target = paths.job_dir / f"input_image{suffix}"
+        target = paths.job_dir / f"{stem}{suffix}"
         request = Request(image_url, headers={"User-Agent": "WorldOdyssey-inference/0.1"})
         try:
             with urlopen(request, timeout=60) as response, target.open("wb") as handle:

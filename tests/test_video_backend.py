@@ -25,6 +25,7 @@ from worldodyssey_inference.video_backend.providers import (
     DEFAULT_SGLANG_I2V_MODEL,
     DEFAULT_SGLANG_MODEL,
     LocalSGLangProvider,
+    MINIMAX_H3_MODEL,
     ProviderRunResult,
     SGLANG_VIDEO_API_FORMAT_JSON,
     SGLANG_VIDEO_API_FORMAT_MULTIPART,
@@ -408,6 +409,147 @@ def test_sglang_i2v_stages_base64_image(tmp_path: Path) -> None:
     assert image_path.read_bytes() == b"fake image"
 
 
+def test_minimax_h3_fl2va_payload_uses_primary_image_as_first_frame(tmp_path: Path) -> None:
+    image_path = tmp_path / "input.png"
+    image_path.write_bytes(b"fake image")
+    provider = LocalSGLangProvider(repo_root=tmp_path, venv_path=make_sglang_runtime(tmp_path))
+    request = VideoGenerationRequest.model_validate(
+        {
+            "provider": "sglang",
+            "model": MINIMAX_H3_MODEL,
+            "mode": "image_to_video",
+            "prompt": "The person picks up the cup while room ambience remains synchronized.",
+            "image_path": str(image_path),
+            "options": {
+                "duration": 5,
+                "fps": 24,
+                "num_inference_steps": 50,
+                "seed": 101,
+                "generate_audio": True,
+            },
+        }
+    )
+
+    payload = provider.build_server_payload(request, image_path=image_path)
+
+    assert payload == {
+        "model": MINIMAX_H3_MODEL,
+        "prompt": "The person picks up the cup while room ambience remains synchronized.",
+        "seconds": 5.0,
+        "task": "fl2va",
+        "conditions": [
+            {
+                "type": "image",
+                "uri": image_path.resolve().as_uri(),
+                "role": "keyframe",
+                "frame_index": 0,
+            }
+        ],
+        "target": {
+            "short_edge": 768,
+            "aspect_ratio": "auto",
+            "duration_seconds": 5.0,
+        },
+        "num_outputs_per_prompt": 1,
+        "num_inference_steps": 50,
+        "flow_shift": 12.0,
+        "audio_flow_shift": 3.0,
+        "seed": 101,
+    }
+
+
+def test_minimax_h3_text_request_uses_t2va_on_fl2va_server(tmp_path: Path) -> None:
+    provider = LocalSGLangProvider(
+        repo_root=tmp_path,
+        venv_path=make_sglang_runtime(tmp_path),
+        minimax_h3_fl2va_server_url="http://127.0.0.1:31010",
+    )
+    request = VideoGenerationRequest.model_validate(
+        {
+            "provider": "sglang",
+            "model": MINIMAX_H3_MODEL,
+            "mode": "text_to_video",
+            "prompt": "A quiet workshop with synchronized tool sounds.",
+            "options": {"duration": 4},
+        }
+    )
+
+    payload = provider.build_server_payload(request)
+
+    assert payload["task"] == "t2va"
+    assert payload["conditions"] == []
+    assert provider._server_url_for_request(request) == "http://127.0.0.1:31010"
+
+
+def test_minimax_h3_ref2va_payload_uses_semantic_image_references(tmp_path: Path) -> None:
+    first = tmp_path / "subject.png"
+    second = tmp_path / "style.png"
+    first.write_bytes(b"subject")
+    second.write_bytes(b"style")
+    provider = LocalSGLangProvider(
+        repo_root=tmp_path,
+        venv_path=make_sglang_runtime(tmp_path),
+        minimax_h3_ref2va_server_url="http://127.0.0.1:31011",
+    )
+    request = VideoGenerationRequest.model_validate(
+        {
+            "provider": "sglang",
+            "model": MINIMAX_H3_MODEL,
+            "mode": "reference_to_video",
+            "prompt": "Use <Picture 1> as the subject and <Picture 2> as the visual style.",
+            "image_path": str(first),
+            "reference_image_urls": ["https://example.com/style.png"],
+            "options": {
+                "duration": 6,
+                "provider_options": {
+                    "minimax_h3": {
+                        "quality": "lossless",
+                        "flow_shift": 11.5,
+                        "audio_flow_shift": 2.5,
+                    }
+                },
+            },
+        }
+    )
+
+    payload = provider.build_server_payload(
+        request,
+        image_path=first,
+        reference_image_paths=[second],
+    )
+
+    assert payload["task"] == "ref2va"
+    assert payload["conditions"] == [
+        {"type": "image", "uri": first.resolve().as_uri(), "role": "reference"},
+        {"type": "image", "uri": second.resolve().as_uri(), "role": "reference"},
+    ]
+    assert payload["quality"] == "lossless"
+    assert payload["flow_shift"] == 11.5
+    assert payload["audio_flow_shift"] == 2.5
+    assert provider._server_url_for_request(request) == "http://127.0.0.1:31011"
+
+
+def test_minimax_h3_rejects_audio_disable_and_invalid_duration(tmp_path: Path) -> None:
+    runtime = make_sglang_runtime(tmp_path)
+    provider = LocalSGLangProvider(
+        repo_root=tmp_path,
+        venv_path=runtime,
+        minimax_h3_venv_path=runtime,
+    )
+    request = VideoGenerationRequest.model_validate(
+        {
+            "provider": "sglang",
+            "model": MINIMAX_H3_MODEL,
+            "mode": "text_to_video",
+            "prompt": "A test.",
+            "options": {"duration": 3, "generate_audio": False},
+        }
+    )
+
+    with pytest.raises(UnsupportedRequestError, match="generate_audio cannot be false"):
+        provider.validate_request(request)
+
+
 def start_fake_sglang_server():
     requests: list[dict] = []
     video_bytes = b"\x00\x00\x00\x18ftypmp42fake"
@@ -500,6 +642,62 @@ def test_sglang_provider_runs_through_native_server_api(tmp_path: Path) -> None:
         ]
         assert "POST /v1/videos" in paths.log_path.read_text(encoding="utf-8")
         assert result.metrics["sglang_video_id"] == "video_1"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_minimax_h3_run_uses_json_and_fl2va_route(tmp_path: Path) -> None:
+    server, requests = start_fake_sglang_server()
+    try:
+        image_path = tmp_path / "input.png"
+        image_path.write_bytes(b"fake image")
+        runtime = make_sglang_runtime(tmp_path)
+        server_url = f"http://127.0.0.1:{server.server_port}"
+        provider = LocalSGLangProvider(
+            repo_root=tmp_path,
+            venv_path=runtime,
+            minimax_h3_venv_path=runtime,
+            minimax_h3_fl2va_server_url=server_url,
+            server_api_format=SGLANG_VIDEO_API_FORMAT_MULTIPART,
+        )
+        paths = JobStore(tmp_path / "jobs").paths_for("job")
+        now = utc_now_iso()
+        request = VideoGenerationRequest.model_validate(
+            {
+                "provider": "sglang",
+                "model": MINIMAX_H3_MODEL,
+                "mode": "image_to_video",
+                "prompt": "Animate the supplied first frame with synchronized audio.",
+                "image_path": str(image_path),
+                "options": {"duration": 5, "seed": 101, "timeout_seconds": 5},
+            }
+        )
+        record = VideoJobRecord(
+            id="job",
+            status=JobStatus.RUNNING,
+            provider="sglang",
+            model=request.model,
+            mode=request.mode,
+            created_at=now,
+            updated_at=now,
+            request=request,
+        )
+
+        result = provider.run(record, paths)
+
+        assert requests[0]["task"] == "fl2va"
+        assert requests[0]["conditions"] == [
+            {
+                "type": "image",
+                "uri": image_path.resolve().as_uri(),
+                "role": "keyframe",
+                "frame_index": 0,
+            }
+        ]
+        assert result.metrics["sglang_server_url"] == server_url
+        assert result.metrics["sglang_video_api_format"] == "json"
+        assert "POST /v1/videos (json)" in paths.log_path.read_text(encoding="utf-8")
     finally:
         server.shutdown()
         server.server_close()

@@ -10,6 +10,8 @@ The local SGLang adapter is native-server-only:
 - submit jobs through `/v1/video/generations` or `/v1/video/generation-batches`
 - the backend posts to SGLang's native `/v1/videos` API and downloads `/v1/videos/<id>/content`
 - `WORLDODYSSEY_SGLANG_VIDEO_API_FORMAT` defaults to the unified native `multipart` request shape
+- MiniMax-H3 always uses native JSON and routes through `WORLDODYSSEY_MINIMAX_H3_FL2VA_BASE_URL` or
+  `WORLDODYSSEY_MINIMAX_H3_REF2VA_BASE_URL`
 
 There is no one-shot generation fallback, no `sglang generate` backend path, and no Python single-request runner.
 
@@ -96,7 +98,7 @@ curl http://127.0.0.1:8000/v1/video/providers
 
 The `sglang` capability exposes:
 
-- `modes`: `text_to_video`, `image_to_video`
+- `modes`: `text_to_video`, `image_to_video`, `reference_to_video`
 - `models`: empty list, because the backend does not maintain a model allowlist
 - `setup.server_script`: `scripts/serve_sglang_diffusion.sh`
 - `setup.server_api`: `/v1/videos`
@@ -258,7 +260,7 @@ backend does not invent an alternate execution path.
 
 The local SGLang adapter validates request shape and server identity:
 
-- Supported modes: `text_to_video`, `image_to_video`
+- Supported modes: `text_to_video`, `image_to_video`, and MiniMax-H3 `reference_to_video`
 - T2V requires explicit `height`, `width`, and `num_frames`
 - I2V accepts exactly one of `image_path`, `image_url`, or `image_base64`
 - I2V stages `image_url` and `image_base64` into the job folder before calling SGLang

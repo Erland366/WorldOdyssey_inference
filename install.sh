@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT_DIR"
 
 INSTALL_SGLANG=1
+INSTALL_MINIMAX_H3=0
 
 usage() {
     cat <<'EOF'
@@ -16,6 +17,7 @@ Usage:
 Options:
   --main-only       Install only the backend .venv (no GPU runtime).
   --skip-sglang     Do not create/update the isolated .venv_sglang runtime.
+  --with-minimax-h3 Also install the isolated .venv_sglang_h3 runtime.
   -h, --help        Show this help message.
 
 The default installation supports FastWan and Cosmos 3 through one pinned
@@ -31,6 +33,9 @@ while (($#)); do
             ;;
         --skip-sglang)
             INSTALL_SGLANG=0
+            ;;
+        --with-minimax-h3)
+            INSTALL_MINIMAX_H3=1
             ;;
         --skip-cosmos)
             echo "Warning: --skip-cosmos is deprecated; Cosmos 3 is part of the unified SGLang runtime." >&2
@@ -72,6 +77,11 @@ if ((INSTALL_SGLANG)); then
     bash scripts/install_sglang_diffusion.sh
 fi
 
+if ((INSTALL_MINIMAX_H3)); then
+    section "Installing the isolated MiniMax-H3 runtime (.venv_sglang_h3)"
+    bash scripts/install_minimax_h3.sh
+fi
+
 section "Verifying the installation"
 .venv/bin/python - <<'PY'
 from importlib import metadata
@@ -96,6 +106,17 @@ Start SGLang (GPU server):
 
 Then, in another shell, start the API backend:
   bash scripts/run_backend.sh
+EOF
+fi
+
+if ((INSTALL_MINIMAX_H3)); then
+    cat <<'EOF'
+
+Start MiniMax-H3 first-frame image-to-video-and-audio:
+  bash scripts/run_minimax_h3_fl2va.sh
+
+For semantic reference conditioning, use:
+  bash scripts/run_minimax_h3_ref2va.sh
 EOF
 fi
 

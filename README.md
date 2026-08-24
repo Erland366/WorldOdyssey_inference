@@ -6,6 +6,7 @@ The primary local path is:
 
 - FastAPI backend in the main `.venv`
 - isolated SGLang Diffusion runtime in `.venv_sglang`
+- isolated current SGLang runtime for MiniMax-H3 in `.venv_sglang_h3`
 - local provider id: `sglang`
 - one short server launcher per model under `scripts/run_*.sh`
 - shared advanced launcher: `scripts/serve_sglang_diffusion.sh`
@@ -16,12 +17,13 @@ The primary local path is:
 - validated FP8 model pair: `hunyuanvideo-community/HunyuanVideo` with
   `lmsys/hunyuanvideo-modelopt-fp8-sglang-transformer`
 - default I2V model: `FastVideo/FastWan2.2-TI2V-5B-Diffusers`
+- optional joint audio-video model: `MiniMaxAI/MiniMax-H3` (`fl2va` and `ref2va`)
 - tiny T2V debug model: `Erland/tiny-wan2.1-t2v-debug`
 
 There is no local one-shot generation fallback. The backend requires an already-running native SGLang Diffusion server
-and calls SGLang's `/v1/videos` API. The normal server path uses the same native multipart API and pinned runtime for
-FastWan, Cosmos 3, Hunyuan FP8, I2V, and tiny debug runs. One SGLang process loads one checkpoint; restart that process
-to switch model families while the WorldOdyssey API stays unchanged.
+and calls SGLang's `/v1/videos` API. FastWan, Cosmos 3, Hunyuan FP8, I2V, and tiny debug runs use the native multipart
+API and pinned CUDA 12 runtime. MiniMax-H3 uses its JSON `task`/`conditions` API and a separate current SGLang runtime;
+the backend can route FL2VA and Ref2VA to two model servers.
 
 The server exposes single-job and batch APIs:
 
@@ -41,6 +43,7 @@ GET  /v1/video/generation-batches/<batch_id>
 - [Tiny models and Diffusers](docs/tiny-models-and-diffusers.md): tiny Wan fixtures, Diffusers/FastVideo benchmarks,
   and backend slow tests.
 - [SGLang Diffusion setup](references/sglang-diffusion.md): pinned SGLang environment, CUDA probes, and failure modes.
+- [MiniMax-H3](docs/minimax-h3.md): installation, FL2VA/Ref2VA servers, request shapes, and one-image workflow.
 - [Video backend contract](references/video-backend.md): API schema, provider capability behavior, and runtime details.
 - [Submission configs](configs/README.md): YAML config shape and `--set dotted.path=value` overrides.
 
@@ -111,6 +114,8 @@ Each supported checkpoint has a model-server launcher. Run one of these in the f
 | Wan 2.1 Fun InP I2V, low-memory | `bash scripts/run_wan_inp_i2v.sh` |
 | HunyuanVideo ModelOpt FP8 | `bash scripts/run_hunyuan_fp8.sh` |
 | Tiny Wan debug model | `bash scripts/run_tiny_wan.sh` |
+| MiniMax-H3 text/first-or-last frame | `bash scripts/run_minimax_h3_fl2va.sh` |
+| MiniMax-H3 semantic references | `bash scripts/run_minimax_h3_ref2va.sh` |
 
 Extra arguments are forwarded to SGLang. Environment variables still override GPU count, ports, offload settings,
 and model-specific defaults. The lower-level `scripts/serve_sglang_diffusion.sh` remains available for arbitrary

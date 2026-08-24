@@ -25,6 +25,7 @@ from worldodyssey_inference.video_backend.providers import (
     DEFAULT_SGLANG_MODEL,
     DEFAULT_SGLANG_NUM_FRAMES,
     DEFAULT_SGLANG_WIDTH,
+    MINIMAX_H3_MODEL,
 )
 
 
@@ -193,14 +194,19 @@ def build_worldodyssey_generation_request(
     selected_model = model or (
         DEFAULT_SGLANG_I2V_MODEL if mode == VideoMode.IMAGE_TO_VIDEO else DEFAULT_SGLANG_MODEL
     )
-    if mode == VideoMode.IMAGE_TO_VIDEO:
-        height = height or DEFAULT_SGLANG_I2V_HEIGHT
-        width = width or DEFAULT_SGLANG_I2V_WIDTH
-        num_frames = num_frames or DEFAULT_SGLANG_I2V_NUM_FRAMES
-    else:
-        height = height or DEFAULT_SGLANG_HEIGHT
-        width = width or DEFAULT_SGLANG_WIDTH
-        num_frames = num_frames or DEFAULT_SGLANG_NUM_FRAMES
+    is_minimax_h3 = (
+        selected_model == MINIMAX_H3_MODEL
+        or selected_model.rstrip("/").rsplit("/", maxsplit=1)[-1].lower() == "minimax-h3"
+    )
+    if not is_minimax_h3:
+        if mode == VideoMode.IMAGE_TO_VIDEO:
+            height = height or DEFAULT_SGLANG_I2V_HEIGHT
+            width = width or DEFAULT_SGLANG_I2V_WIDTH
+            num_frames = num_frames or DEFAULT_SGLANG_I2V_NUM_FRAMES
+        else:
+            height = height or DEFAULT_SGLANG_HEIGHT
+            width = width or DEFAULT_SGLANG_WIDTH
+            num_frames = num_frames or DEFAULT_SGLANG_NUM_FRAMES
 
     metadata: dict[str, Any] = {
         "adapter": "worldodyssey",
