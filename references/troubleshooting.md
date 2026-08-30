@@ -277,6 +277,134 @@ python -m pytest tests/backends/test_sglang_tiny_wan.py -m slow -s
 If `sglang` is absent, the test skips. If `sglang` is installed but the runtime stack is incompatible, the test fails
 with the real `sglang generate` output. This is not the provider-neutral backend path.
 
+## MiniMax-H3 Reports Diffusion Support Is Unavailable
+
+Cause: The isolated `.venv_sglang_h3` runtime can have `sglang[diffusion]` installed while the dynamic linker still
+cannot see the NVIDIA libraries bundled inside the virtual environment. A mismatched CUDA wheel set can also make
+SGLang's resolver claim the packages are present while the compiled kernels are not loadable. On A100, importing
+`sgl_kernel` can fail with:
+
+```text
+[sgl_kernel] CRITICAL: Could not load any common_ops library!
+ImportError: libnvrtc.so.13: cannot open shared object file: No such file or directory
+GPU Info:
+- Compute capability: 80
+- Expected variant: SM80 (precise math for compatibility)
+- CUDA version: 12.6
+```
+
+The SGLang CLI may then print:
+
+```text
+Diffusion model support is not available. Install with: pip install "sglang[diffusion]"
+```
+
+even though the dependency extra is already installed.
+
+Fix: Use `scripts/install_minimax_h3.sh`, `scripts/run_minimax_h3_fl2va.sh`, or `scripts/run_minimax_h3_ref2va.sh`
+instead of invoking `.venv_sglang_h3/bin/sglang` directly. These scripts source `scripts/minimax_h3_env.sh`, put the H3
+venv's `bin` directory on `PATH`, and prepend `.venv_sglang_h3/lib/python*/site-packages/nvidia/*/lib` directories to
+`LD_LIBRARY_PATH` before SGLang imports the diffusion runtime.
+
+The installer intentionally follows SGLang's CUDA-12.9 override sequence instead of relying on one resolver solve:
+
+```bash
+uv pip install --prerelease=allow "sglang[diffusion]==0.5.18"
+uv pip install --force-reinstall torch==2.13.0 torchaudio==2.11.0 torchvision \
+  --index-url https://download.pytorch.org/whl/cu129
+uv pip install --force-reinstall sglang-kernel --index-url https://docs.sglang.ai/whl/cu129/
+uv pip install --force-reinstall sgl-deep-gemm --index-url https://docs.sglang.ai/whl/cu129/ --no-deps
+```
+
+Normal dependency resolution rejects this because current SGLang metadata still references CUDA 13-era dependencies,
+but SGLang documents the post-install CUDA-12.9 override as the local CUDA-12 path. On R570 hosts this should import as
+`torch==2.13.0+cu129` with `torch.version.cuda == "12.9"` and should not require an R580/CUDA-13 driver.
+The validated A100 set uses `sglang-kernel==0.4.6.post1+cu129` and
+`sgl-deep-gemm==0.1.5.post3+cu129`.
+
+## MiniMax-H3 Finishes Generation Then Fails On Missing `ffprobe`
+
+Cause: MiniMax-H3 produces a joint audio/video MP4, then SGLang invokes `ffprobe` to validate its streams, dimensions,
+frame count, and duration. If `ffprobe` is absent, the full denoising and decoding pass succeeds but SGLang rejects and
+removes the unvalidated output:
+
+```text
+RuntimeError: ffprobe is required to validate final MiniMax H3 output
+```
+
+Fix: Rerun the isolated H3 installer before starting the server:
+
+```bash
+bash scripts/install_minimax_h3.sh
+```
+
+The installer pins `static-ffmpeg`, fetches its matching `ffmpeg` and `ffprobe` binaries, and links both into
+`.venv_sglang_h3/bin`. The H3 server launcher checks both commands before loading the model, preventing this late
+failure on future runs.
+
+## MiniMax-H3 Download Fails Under The Home Hugging Face Cache
+
+Cause: The default Hugging Face cache lives under `~/.cache/huggingface`. On shared machines, the filesystem can have
+free space while the user's home quota is exhausted. H3 then fails while fetching weight shards with:
+
+```text
+OSError: [Errno 122] Disk quota exceeded
+```
+
+The same partial snapshot can later make SGLang start correctly but fail before loading weights:
+
+```text
+ValueError: Model directory .../MiniMax-H3/.../FL2VA does not contain model_index.json.
+```
+
+Fix: Use the repository launcher path, which exports `HF_HOME` to `.cache/huggingface` under this workspace unless
+`WORLDODYSSEY_HF_HOME` or `HF_HOME` is already set:
+
+```bash
+bash scripts/download_minimax_h3.sh fl2va
+bash scripts/run_minimax_h3_fl2va.sh
+```
+
+For a different large cache location:
+
+```bash
+WORLDODYSSEY_HF_HOME=/nfs-stor/alham.fikri/hf-cache \
+bash scripts/download_minimax_h3.sh fl2va
+```
+
+The helper also sets `HF_HUB_DISABLE_XET=1` by default. This forces the standard Hub download path after observed Xet
+failures such as:
+
+```text
+RuntimeError: Task error: File reconstruction error: Internal Writer Error: Background writer channel closed
+```
+
+## MiniMax-H3 TP4 Exceeds The Slurm Host-Memory Limit
+
+Cause: Layerwise offload reduces VRAM by retaining streamed model state in host memory. A TP4 launch creates multiple
+H3 workers, and each worker can hold a substantial CPU-resident state while loading the text encoder and transformer.
+The machine may report ample global RAM while the Slurm job has a lower memory-cgroup limit. The kernel then reports
+the cgroup at its limit and the H3 stack disappears before either health endpoint starts:
+
+```text
+memory: usage 241172480kB, limit 241172480kB
+Out of memory and no killable processes...
+```
+
+Fix on the current four-A100 allocation: keep TP4 but enable SGLang's online AdaLN path, which excludes 24.2 GiB of
+AdaLN projection weights from each worker's resident state and rebuilds the required outputs from the unquantized
+checkpoint per request:
+
+```bash
+bash scripts/run_minimax_h3_fl2va.sh
+```
+
+The FL2VA and Ref2VA launchers default to four GPUs and TP4 and explicitly add `--minimax-h3-adaln-online`. FL2VA uses
+plan width 3, which covers its `t2va` and `fl2va` timestep plans; Ref2VA uses width 4. A request wider than the configured
+plan fails instead of truncating. Check Slurm cgroup failures with `dmesg --ctime`; global `free -h` output alone is not
+sufficient. Direct GPU weight loading is not an alternative here because SGLang rejects it with TP greater than one
+or layerwise offload.
+
 ## SGLang Rejects Per-Request VSA Or GPU Settings
 
 Cause: Native SGLang `/v1/videos` does not accept launch-time fields such as `attention_backend`, `vsa_sparsity`, or
@@ -393,3 +521,16 @@ Observed blockers:
 - The compile is long and brittle enough that it should be treated as a production build attempt, not a quick foreground debug command.
 
 Recommendation: prefer an official SGLang container or matching prebuilt wheel set before attempting local kernel builds.
+
+### MiniMax-H3 AdaLN Cache Miss After Changing Inference Steps
+
+**Symptom:** A TP4 online-AdaLN server completes one inference-step schedule, then a request with another schedule
+fails at the first denoising forward pass with
+`MiniMax H3 AdaLN cache does not cover the request timestep plan`.
+
+**Cause:** SGLang 0.5.18 computes the missing plans before checking slab capacity. When the old and new plans exceed
+the 64-plan slab, it clears the old slab but fails to add overlapping plans back to the missing set.
+
+**Solution:** Run `scripts/install_minimax_h3.sh`, which applies
+`scripts/patch_minimax_h3_adaln_cache.py` to the installed SGLang source. Restart the SGLang process after patching;
+the patch does not alter an already imported worker process.

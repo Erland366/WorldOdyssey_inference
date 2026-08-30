@@ -5,6 +5,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 # shellcheck source=../runtime-versions.env
 source "$ROOT_DIR/runtime-versions.env"
+# shellcheck source=minimax_h3_env.sh
+source "$ROOT_DIR/scripts/minimax_h3_env.sh"
 
 VARIANT="${1:-}"
 if [[ "$VARIANT" != "fl2va" && "$VARIANT" != "ref2va" ]]; then
@@ -12,6 +14,13 @@ if [[ "$VARIANT" != "fl2va" && "$VARIANT" != "ref2va" ]]; then
     exit 2
 fi
 shift
+
+SKIP_CUDA_PREFLIGHT=0
+for arg in "$@"; do
+    if [[ "$arg" == "-h" || "$arg" == "--help" ]]; then
+        SKIP_CUDA_PREFLIGHT=1
+    fi
+done
 
 MODEL_PATH="${MINIMAX_H3_MODEL:-MiniMaxAI/MiniMax-H3}"
 VENV_PATH="${WORLDODYSSEY_MINIMAX_H3_VENV:-$ROOT_DIR/.venv_sglang_h3}"
@@ -32,12 +41,20 @@ if [[ ! -x "$VENV_PATH/bin/sglang" ]]; then
     exit 1
 fi
 
-# SGLang compiles MiniMax-H3's fused QKNorm/RoPE kernel on first use and
-# invokes Ninja by executable name. Ensure the isolated environment's tools
-# are visible even though this launcher does not activate the environment.
-export PATH="$VENV_PATH/bin:$PATH"
+# SGLang's H3 stack loads CUDA libraries from Python wheels and invokes Ninja
+# by executable name. Prepare those library paths before activating the
+# isolated environment.
+worldodyssey_configure_minimax_h3_env "$VENV_PATH" "$ROOT_DIR"
+source "$VENV_PATH/bin/activate"
 
-"$VENV_PATH/bin/python" - "$WORLDODYSSEY_MINIMAX_H3_SGLANG_VERSION" <<'PY'
+for executable in ffmpeg ffprobe; do
+    if ! command -v "$executable" >/dev/null 2>&1; then
+        echo "MiniMax-H3 requires $executable in $VENV_PATH/bin. Run scripts/install_minimax_h3.sh again." >&2
+        exit 1
+    fi
+done
+
+python - "$WORLDODYSSEY_MINIMAX_H3_SGLANG_VERSION" <<'PY'
 from importlib import metadata
 import sys
 
@@ -45,6 +62,19 @@ installed = metadata.version("sglang")
 if installed != sys.argv[1]:
     raise SystemExit(f"SGLang version mismatch: expected {sys.argv[1]}, got {installed}")
 PY
+
+if [[ "$SKIP_CUDA_PREFLIGHT" -eq 0 ]]; then
+    python - <<'PY'
+import torch
+
+print(f"Torch CUDA runtime: {torch.version.cuda}")
+if not torch.cuda.is_available():
+    raise SystemExit(
+        "MiniMax-H3 CUDA preflight failed: torch.cuda.is_available() is false. "
+        "The CUDA-12.9 H3 runtime requires an NVIDIA R525+ CUDA-12 driver."
+    )
+PY
+fi
 
 MEMORY_ARGS=()
 if [[ "$PERFORMANCE_MODE" == "memory" ]]; then
@@ -82,6 +112,9 @@ Backend route:
 
 Runtime:
   venv=$VENV_PATH
+  hf_home=$HF_HOME
+  hf_hub_cache=$HUGGINGFACE_HUB_CACHE
+  hf_hub_disable_xet=$HF_HUB_DISABLE_XET
   model=$MODEL_PATH
   variant=$VARIANT
   GPUs=$NUM_GPUS, TP=$TP_SIZE, Ulysses=$ULYSSES_DEGREE
@@ -89,8 +122,8 @@ Runtime:
 
 EOF
 
-printf 'Command:\n  %q' "$VENV_PATH/bin/sglang"
+printf 'Command:\n  %q' "sglang"
 printf ' %q' "${ARGS[@]}"
 printf '\n'
 
-exec "$VENV_PATH/bin/sglang" "${ARGS[@]}"
+exec sglang "${ARGS[@]}"

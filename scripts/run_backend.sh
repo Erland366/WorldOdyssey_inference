@@ -14,7 +14,8 @@ fi
 export WORLDODYSSEY_SGLANG_BASE_URL="${WORLDODYSSEY_SGLANG_BASE_URL:-http://127.0.0.1:30000}"
 export WORLDODYSSEY_SGLANG_VIDEO_API_FORMAT="${WORLDODYSSEY_SGLANG_VIDEO_API_FORMAT:-multipart}"
 
-exec "$VENV_PATH/bin/python" "$ROOT_DIR/scripts/serve_video_backend.py" \
+source "$VENV_PATH/bin/activate"
+exec python "$ROOT_DIR/scripts/serve_video_backend.py" \
     --host "$HOST" \
     --port "$PORT" \
     "$@"

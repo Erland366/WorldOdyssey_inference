@@ -16,6 +16,7 @@ wheels/
 .env
 
 # Generated inference/debug artifacts
+.cache/
 artifacts/
 benchmark_results/
 inputs/uploads/
